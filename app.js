@@ -1,7 +1,8 @@
 import {
   pad, ymd, ym, parseYmd, daysInMonth, addMonths, rateFor, shiftMinutes, shiftWage, payDateFor,
-  aggregate, paymentsByMonth, paymentBreakdown, ONEOFF,
+  aggregate, paymentsByMonth, paymentBreakdown, ONEOFF, payBasis,
 } from './calc.js';
+import { holidayName } from './holidays.js';
 import { migrate, NewerDataError, CURRENT_VERSION } from './migrate.js';
 import { shiftsToIcs } from './ics.js';
 
@@ -58,6 +59,15 @@ const today = () => { const d = new Date(); return ymd(d.getFullYear(), d.getMon
 const DOW = ['日', '月', '火', '水', '木', '金', '土'];
 const dowOf = (date) => { const [y, m, d] = parseYmd(date); return new Date(y, m - 1, d).getDay(); };
 const fmtDate = (date) => { const [, m, d] = parseYmd(date); return `${m}/${d}(${DOW[dowOf(date)]})`; };
+const PREMIUM_DAYS = ['日', '月', '火', '水', '木', '金', '土'];
+/** 上乗せ設定の説明（例：土日祝 +¥50/時） */
+const premiumText = (r) => `${[...(r.days || []).slice().sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7)).map((d) => PREMIUM_DAYS[d]), r.holiday ? '祝' : ''].join('') || '（曜日未選択）'} +${yen(r.amount)}/時`;
+/** 時給・日給の内訳の説明 */
+function basisText(b) {
+  if (b.kind === 'daily') return { oneoff: '日給', shiftDaily: '日給（この日だけ）', workplace: '日給' }[b.why] + ' ' + yen(b.daily);
+  if (b.why === 'shiftHourly') return `時給 ${yen(b.hourly)}（この日だけ）`;
+  return b.premium ? `時給 ${yen(b.base)} ＋ 上乗せ ${yen(b.premium)}` : `時給 ${yen(b.base)}`;
+}
 const wpById = (id) => state.workplaces.find((w) => w.id === id);
 const sourceName = (src) => (src === ONEOFF ? '単発' : wpById(src)?.name ?? '(削除済み)');
 const sourceColor = (src) => (src === ONEOFF ? ONEOFF_COLOR : wpById(src)?.color ?? ONEOFF_COLOR);
@@ -111,7 +121,7 @@ function viewCalendar() {
   const t = today();
   const daysHtml = cells.map((date) => {
     const dw = dowOf(date);
-    const cls = ['day', date.slice(0, 7) !== ym(y, m) && 'other', date === t && 'today', date === ui.sel && 'sel', dw === 0 && 'sun', dw === 6 && 'sat'].filter(Boolean).join(' ');
+    const cls = ['day', date.slice(0, 7) !== ym(y, m) && 'other', date === t && 'today', date === ui.sel && 'sel', (dw === 0 || holidayName(date)) && 'sun', dw === 6 && !holidayName(date) && 'sat'].filter(Boolean).join(' ');
     const dots = (byDate[date] || []).map((sh) => `<i class="dot" style="background:${shiftColor(sh)}"></i>`).join('');
     return `<button class="${cls}" data-date="${date}"><span class="d">${parseYmd(date)[2]}</span><span class="dots">${dots}</span></button>`;
   }).join('');
@@ -137,7 +147,7 @@ function viewCalendar() {
       ${!state.workplaces.length && !state.shifts.length ? `<div class="banner" style="margin:0 0 10px;padding:10px;border:1px solid var(--accent);border-radius:10px">
         <div class="small" style="margin-bottom:6px">以前のデータがある場合は、バックアップから戻せます。</div>
         <button class="btn sm sub block" data-act="import">バックアップから復元</button></div>` : ''}
-      <div class="row between"><h2>${fmtDate(ui.sel)}</h2><button class="btn sm sub" data-act="add-shift">＋ シフト追加</button></div>
+      <div class="row between"><h2>${fmtDate(ui.sel)}${holidayName(ui.sel) ? ` <span class="small danger">${holidayName(ui.sel)}</span>` : ''}</h2><button class="btn sm sub" data-act="add-shift">＋ シフト追加</button></div>
       ${list}
     </div>
     <div class="card">
@@ -156,11 +166,12 @@ function shiftItemHtml(sh) {
   const wp = sh.workplaceId ? wpById(sh.workplaceId) : null;
   const time = sh.start && sh.end ? `${sh.start}〜${sh.end}` : '時間指定なし';
   const { paidMin } = shiftMinutes(sh);
-  const daily = (sh.dailyOverride != null && sh.dailyOverride !== '') || !wp || rateFor(wp, sh.date)?.payType === 'daily';
+  const b = payBasis(sh, wp);
+  const tag = b.kind === 'daily' ? '日給' : b.why === 'shiftHourly' ? `時給${yen(b.hourly)}` : b.premium ? `+${yen(b.premium)}` : '';
   return `<div class="shift-item" data-shift="${sh.id}">
     <span class="bar" style="background:${shiftColor(sh)}"></span>
     <div class="grow">
-      <div><b>${esc(shiftName(sh))}</b> ${daily ? '<span class="tag">日給</span>' : ''}</div>
+      <div><b>${esc(shiftName(sh))}</b> ${tag ? `<span class="tag">${tag}</span>` : ''}</div>
       <div class="muted small">${time}${paidMin ? `（${hm(paidMin)}${sh.breakMin ? `・休憩${sh.breakMin}分` : ''}）` : ''}${sh.memo ? '　' + esc(sh.memo) : ''}</div>
     </div>
     <div class="num"><div>${yen(shiftWage(sh, wp))}</div><div class="muted small">交通費 ${yen(sh.transport)}</div></div>
@@ -324,7 +335,7 @@ function viewSettings() {
     return `<div class="shift-item" data-wp="${w.id}">
       <span class="bar" style="background:${w.color}"></span>
       <div class="grow"><b>${esc(w.name)}</b>
-        <div class="muted small">${r ? (r.payType === 'daily' ? '日給 ' : '時給 ') + yen(r.amount) : '給与未設定'}・交通費 ${yen(w.transport)}/回・${closingText(w)}</div></div>
+        <div class="muted small">${r ? (r.payType === 'daily' ? '日給 ' : '時給 ') + yen(r.amount) : '給与未設定'}${(w.premiums || []).map((p) => '・' + premiumText(p)).join('')}・交通費 ${yen(w.transport)}/回・${closingText(w)}</div></div>
       <span class="muted small">${cnt}件 ›</span>
     </div>`;
   }).join('');
@@ -408,7 +419,9 @@ function openShift(sh) {
   }
   const oo = sh.oneOff || { name: '', daily: '', color: ONEOFF_COLOR, payDate: '' };
   const opts = state.workplaces.map((w) => `<option value="${w.id}" ${w.id === sh.workplaceId ? 'selected' : ''}>${esc(w.name)}</option>`).join('');
-  const hasOverride = sh.dailyOverride != null && sh.dailyOverride !== '';
+  const set = (v) => v != null && v !== '';
+  const payMode = set(sh.dailyOverride) ? 'daily' : set(sh.hourlyOverride) ? 'hourly' : '';
+  const overrideVal = payMode === 'daily' ? sh.dailyOverride : payMode === 'hourly' ? sh.hourlyOverride : '';
   openSheet(`
     <h2>${isNew ? 'シフトを追加' : 'シフトを編集'}</h2>
     <form id="f">
@@ -430,8 +443,13 @@ function openShift(sh) {
       </div>
       <div class="field"><label>交通費（円）</label><input type="number" inputmode="numeric" name="transport" value="${sh.transport ?? 0}" min="0"></div>
       <div id="override-fields" class="field">
-        <label class="check"><input type="checkbox" name="useOverride" ${hasOverride ? 'checked' : ''}> この日は日給にする</label>
-        <input type="number" inputmode="numeric" name="override" value="${hasOverride ? sh.dailyOverride : ''}" placeholder="日給（円）" min="0" style="margin-top:6px">
+        <label>この日の給与</label>
+        <select name="payMode">
+          <option value="" ${payMode === '' ? 'selected' : ''}>いつもどおり（バイト先の設定）</option>
+          <option value="hourly" ${payMode === 'hourly' ? 'selected' : ''}>この日だけ時給を変える</option>
+          <option value="daily" ${payMode === 'daily' ? 'selected' : ''}>この日だけ日給にする</option>
+        </select>
+        <input type="number" inputmode="numeric" name="override" value="${overrideVal}" min="0" style="margin-top:6px">
       </div>
       <div class="field"><label>メモ</label><input name="memo" value="${esc(sh.memo)}"></div>
       <div class="preview" id="pv"></div>
@@ -454,7 +472,8 @@ function openShift(sh) {
         start: fd.get('start'), end: fd.get('end'),
         breakMin: num(fd.get('breakMin')),
         transport: num(fd.get('transport')),
-        dailyOverride: wid && fd.get('useOverride') ? num(fd.get('override')) : null,
+        dailyOverride: wid && fd.get('payMode') === 'daily' ? num(fd.get('override')) : null,
+        hourlyOverride: wid && fd.get('payMode') === 'hourly' ? num(fd.get('override')) : null,
         memo: fd.get('memo').trim(),
         oneOff: wid ? null : { name: fd.get('ooName').trim(), daily: num(fd.get('ooDaily')), color: fd.get('color'), payDate: fd.get('ooPay') },
       };
@@ -464,12 +483,14 @@ function openShift(sh) {
       const wp = cur.workplaceId ? wpById(cur.workplaceId) : null;
       $('#oneoff-fields', root).hidden = !!wp;
       $('#override-fields', root).hidden = !wp;
-      f.override.hidden = !f.useOverride.checked;
+      f.override.hidden = !f.payMode.value;
+      f.override.placeholder = f.payMode.value === 'daily' ? '日給（円）' : '時給（円）';
       const { paidMin, nightMin } = shiftMinutes(cur);
       const wage = shiftWage(cur, wp);
-      const r = wp && rateFor(wp, cur.date);
-      const rateText = !wp ? '日給' : cur.dailyOverride != null ? '日給（この日だけ）' : r ? `${r.payType === 'daily' ? '日給' : '時給'} ${yen(r.amount)}` : '給与未設定';
-      $('#pv', root).innerHTML = `<div class="kv"><span class="k">${rateText}${paidMin ? '・' + hm(paidMin) : ''}${wp?.nightPremium && nightMin && r?.payType === 'hourly' && cur.dailyOverride == null ? `（深夜${hm(nightMin)}）` : ''}</span><b>${yen(wage)}</b></div>
+      const b = payBasis(cur, wp);
+      const hol = cur.date && holidayName(cur.date);
+      $('#pv', root).innerHTML = `${hol ? `<div class="small danger">${hol}</div>` : ''}
+        <div class="kv"><span class="k">${basisText(b)}${paidMin ? '・' + hm(paidMin) : ''}${wp?.nightPremium && nightMin && b.kind === 'hourly' ? `（深夜${hm(nightMin)}）` : ''}</span><b>${yen(wage)}</b></div>
         <div class="kv"><span class="k">＋ 交通費</span><span>${yen(cur.transport)}</span></div>
         <div class="kv"><span class="k">支給予定日</span><span>${cur.date ? fmtDate(payDateFor(cur, wp)) : '—'}</span></div>`;
     };
@@ -530,6 +551,12 @@ function openWorkplace(w) {
       <input type="number" inputmode="numeric" name="rAmt" value="${r.amount}" min="0" placeholder="円">
       ${i === 0 ? '<span></span>' : '<button type="button" class="x" data-rm>×</button>'}
     </div>`;
+  const premRow = (r) => `<div class="prem-row">
+      <div class="days">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<label class="daychk"><input type="checkbox" value="${d}" ${(r.days || []).includes(d) ? 'checked' : ''}><span>${PREMIUM_DAYS[d]}</span></label>`).join('')}
+        <label class="daychk"><input type="checkbox" value="holiday" ${r.holiday ? 'checked' : ''}><span>祝</span></label></div>
+      <div class="row"><span class="small muted">時給に</span><input type="number" inputmode="numeric" name="pAmt" value="${r.amount ?? ''}" min="0" placeholder="円" style="width:90px"><span class="small muted">円 上乗せ</span>
+        <button type="button" class="x" data-rm-prem style="margin-left:auto">×</button></div>
+    </div>`;
   const cnt = state.shifts.filter((s) => s.workplaceId === w.id).length;
   openSheet(`
     <h2>${isNew ? 'バイト先を追加' : 'バイト先を編集'}</h2>
@@ -540,6 +567,11 @@ function openWorkplace(w) {
         <div id="rates">${[...w.rates].sort((a, b) => a.from.localeCompare(b.from)).map(rateRow).join('')}</div>
         <button type="button" class="btn sm sub" data-act="add-rate">＋ 時給の改定・日給への変更を追加</button>
         <p class="note">時給が変わったら、ここに「変わった日」と新しい金額を追加してください。その日より前のシフトは前の時給のまま計算されます。1行目の日付は空欄なら最初から適用です。</p>
+      </div>
+      <div class="field"><span class="lbl">曜日・祝日の上乗せ</span>
+        <div id="prems">${(w.premiums || []).map(premRow).join('')}</div>
+        <button type="button" class="btn sm sub" data-act="add-prem">＋ 土日祝などの時給アップを追加</button>
+        <p class="note">選んだ曜日・祝日（振替休日を含む）のシフトは、時給に上乗せして計算します。複数当てはまるときは高いほうを使います。年末年始など特定の日だけ時給が違うときは、シフトの入力画面で「この日だけ時給を変える」を選んでください。</p>
       </div>
       <div class="field"><label>交通費（1回あたり・円）</label><input type="number" inputmode="numeric" name="transport" value="${w.transport ?? 0}" min="0">
         <p class="note">シフト追加時の初期値になります。日ごとにシフト側で変更できます。</p></div>
@@ -565,6 +597,9 @@ function openWorkplace(w) {
       const r = { from: today(), payType: lastRow ? $('[name=rType]', lastRow).value : 'hourly', amount: '' };
       rates.insertAdjacentHTML('beforeend', rateRow(r, $$('.rate-row', rates).length));
     });
+    const prems = $('#prems', root);
+    prems.addEventListener('click', (e) => { if (e.target.matches('[data-rm-prem]')) e.target.closest('.prem-row').remove(); });
+    $('[data-act=add-prem]', root).addEventListener('click', () => prems.insertAdjacentHTML('beforeend', premRow({ days: [0, 6], holiday: true, amount: '' })));
     $('[data-act=cancel]', root).addEventListener('click', closeSheet);
     $('[data-act=del]', root)?.addEventListener('click', () => {
       if (!confirm(`「${w.name}」を削除しますか？${cnt ? `\nこのバイト先のシフト${cnt}件と振込実績も一緒に削除されます。` : ''}`)) return;
@@ -586,6 +621,10 @@ function openWorkplace(w) {
         transport: num(fd.get('transport')), closingDay: num(fd.get('closingDay')),
         payMonthOffset: num(fd.get('payMonthOffset')), payDay: num(fd.get('payDay')),
         nightPremium: !!fd.get('nightPremium'),
+        premiums: $$('.prem-row', prems).map((row) => {
+          const checked = $$('input[type=checkbox]:checked', row).map((c) => c.value);
+          return { days: checked.filter((v) => v !== 'holiday').map(Number), holiday: checked.includes('holiday'), amount: num($('[name=pAmt]', row).value) };
+        }).filter((p) => p.amount > 0 && (p.days.length || p.holiday)),
       };
       if (!out.name) return;
       const i = state.workplaces.findIndex((x) => x.id === out.id);

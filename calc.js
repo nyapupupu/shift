@@ -1,4 +1,5 @@
 // 給料計算ロジック（DOMに依存しない純粋関数。node:test からもテストする）
+import { holidayName } from './holidays.js';
 
 export const pad = (n) => String(n).padStart(2, '0');
 export const ymd = (y, m, d) => `${y}-${pad(m)}-${pad(d)}`;
@@ -42,17 +43,47 @@ export function shiftMinutes(shift) {
   return { totalMin, paidMin, nightMin };
 }
 
+/** その日の時給の上乗せ額（曜日・祝日の設定のうち、当てはまる中で一番高いもの） */
+export function premiumFor(wp, date) {
+  const [y, m, d] = parseYmd(date);
+  const dow = new Date(y, m - 1, d).getDay();
+  const holiday = !!holidayName(date);
+  let best = 0;
+  for (const r of wp?.premiums || []) {
+    if ((r.days || []).includes(dow) || (r.holiday && holiday)) best = Math.max(best, Number(r.amount) || 0);
+  }
+  return best;
+}
+
+const isSet = (v) => v != null && v !== '';
+
+/**
+ * そのシフトの給与の決まり方
+ * { kind: 'daily', daily, why } または { kind: 'hourly', base, premium, hourly, why }
+ * why: 'oneoff' | 'shiftDaily' | 'shiftHourly' | 'workplace'
+ */
+export function payBasis(shift, wp) {
+  if (isSet(shift.dailyOverride)) return { kind: 'daily', daily: Number(shift.dailyOverride), why: 'shiftDaily' };
+  if (!wp) return { kind: 'daily', daily: Number(shift.oneOff?.daily) || 0, why: 'oneoff' };
+  if (isSet(shift.hourlyOverride)) {
+    const h = Number(shift.hourlyOverride);
+    return { kind: 'hourly', base: h, premium: 0, hourly: h, why: 'shiftHourly' };
+  }
+  const rate = rateFor(wp, shift.date);
+  if (!rate) return { kind: 'daily', daily: 0, why: 'workplace' };
+  if (rate.payType === 'daily') return { kind: 'daily', daily: Number(rate.amount) || 0, why: 'workplace' };
+  const base = Number(rate.amount) || 0;
+  const premium = premiumFor(wp, shift.date);
+  return { kind: 'hourly', base, premium, hourly: base + premium, why: 'workplace' };
+}
+
 /** 1シフトの見込み給与（交通費は含まない） */
 export function shiftWage(shift, wp) {
-  if (shift.dailyOverride != null && shift.dailyOverride !== '') return Math.floor(Number(shift.dailyOverride));
-  if (!wp) return Math.floor(Number(shift.oneOff?.daily) || 0);
-  const rate = rateFor(wp, shift.date);
-  if (!rate) return 0;
-  if (rate.payType === 'daily') return Math.floor(Number(rate.amount) || 0);
+  const b = payBasis(shift, wp);
+  if (b.kind === 'daily') return Math.floor(b.daily);
   const { paidMin, nightMin } = shiftMinutes(shift);
-  const hourly = Number(rate.amount) || 0;
-  const night = wp.nightPremium ? hourly * 0.25 * nightMin / 60 : 0;
-  return Math.floor(hourly * paidMin / 60 + night);
+  const night = wp?.nightPremium ? b.hourly * 0.25 * nightMin / 60 : 0;
+  return Math.floor(b.hourly * paidMin / 60 + night);
 }
 
 /** 給料日の年月 'YYYY-MM'。closingDay: 0=末日, payDay: 0=末日, payMonthOffset: 締めた月から何か月後に支払うか */

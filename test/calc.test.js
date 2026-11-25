@@ -62,3 +62,23 @@ test('振込実績の内訳', () => {
   assert.deepEqual(paymentBreakdown({ amount: 50000, transport: 4000, deduction: 1500 }),
     { amount: 50000, transport: 4000, deduction: 1500, gross: 51500, wageGross: 47500 });
 });
+
+test('土日祝の上乗せ（一番高いものを適用）', async () => {
+  const { premiumFor } = await import('../calc.js');
+  const wp = { ...cafe, nightPremium: false, premiums: [{ days: [0, 6], holiday: false, amount: 50 }, { days: [], holiday: true, amount: 100 }] };
+  assert.equal(premiumFor(wp, '2026-11-25'), 0);   // 水曜
+  assert.equal(premiumFor(wp, '2026-11-28'), 50);  // 土曜
+  assert.equal(premiumFor(wp, '2026-11-23'), 100); // 勤労感謝の日（月）
+  assert.equal(premiumFor(wp, '2026-05-03'), 100); // 日曜かつ祝日 → 高い方
+  // 1200+50 で 4時間
+  assert.equal(shiftWage({ date: '2026-11-28', start: '10:00', end: '14:00' }, wp), 5000);
+});
+
+test('この日だけ時給を変える', () => {
+  const wp = { ...cafe, premiums: [{ days: [0, 6], holiday: true, amount: 50 }] };
+  // 上乗せは無視して、指定の時給（深夜割増は適用）
+  assert.equal(shiftWage({ date: '2026-11-28', start: '20:00', end: '23:00', hourlyOverride: 1500 }, wp), 1500 * 3 + 1500 * 0.25 * 1);
+  // 日給設定の職場でも時給指定が優先
+  const daily = { ...cafe, rates: [{ from: '2000-01-01', payType: 'daily', amount: 8000 }] };
+  assert.equal(shiftWage({ date: '2026-11-25', start: '10:00', end: '12:00', hourlyOverride: 1500 }, daily), 3000);
+});
