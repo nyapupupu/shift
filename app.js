@@ -480,6 +480,7 @@ function openShift(sh) {
         <div class="field" id="oo-tp"><label class="check"><input type="checkbox" name="ooTP" ${oo.transportPaid === false ? '' : 'checked'}> 交通費は報酬とは別に支払われる</label></div>
         <div class="field"><span class="lbl">色</span>${colorPicker(oo.color || ONEOFF_COLOR)}</div>
       </div>
+      <div class="field" id="time-hist-wrap"><span class="lbl">最近の時間から選ぶ</span><div class="chips" id="time-hist"></div></div>
       <div class="three">
         <div class="field"><label>開始</label><input type="time" name="start" value="${sh.start || ''}"></div>
         <div class="field"><label>終了</label><input type="time" name="end" value="${sh.end || ''}"></div>
@@ -528,6 +529,8 @@ function openShift(sh) {
       $('#oneoff-fields', root).hidden = !!wp;
       $('#oo-tp', root).hidden = f.ooType.value !== CONTRACTOR;
       $('#override-fields', root).hidden = !wp;
+      const curKey = `${f.start.value}|${f.end.value}|${num(f.breakMin.value)}`;
+      $$('#time-hist [data-k]', root).forEach((c) => c.classList.toggle('on', c.dataset.k === curKey));
       f.override.hidden = !f.payMode.value;
       f.override.placeholder = f.payMode.value === 'daily' ? '日給（円）' : '時給（円）';
       const { paidMin, nightMin } = shiftMinutes(cur);
@@ -544,7 +547,20 @@ function openShift(sh) {
         })()}
         <div class="kv"><span class="k">支給予定日</span><span>${cur.date ? fmtDate(payDateFor(cur, wp)) : '—'}</span></div>`;
     };
+    const renderHist = () => {
+      const hist = timeHistory(f.wp.value || null);
+      $('#time-hist-wrap', root).hidden = !hist.length;
+      $('#time-hist', root).innerHTML = hist.map((h) => `<button type="button" class="chip" data-k="${h.start}|${h.end}|${h.breakMin}" data-start="${h.start}" data-end="${h.end}" data-break="${h.breakMin}">${h.start}–${h.end}${h.breakMin ? `<small>休${h.breakMin}</small>` : ''}</button>`).join('');
+    };
+    $('#time-hist', root).addEventListener('click', (e) => {
+      const c = e.target.closest('[data-start]');
+      if (!c) return;
+      f.start.value = c.dataset.start; f.end.value = c.dataset.end; f.breakMin.value = c.dataset.break;
+      refresh();
+    });
+    renderHist();
     f.wp.addEventListener('change', () => {
+      renderHist();
       const wp = wpById(f.wp.value);
       if (wp) {
         f.transport.value = wp.transport ?? 0;
@@ -561,6 +577,7 @@ function openShift(sh) {
       e.preventDefault();
       const cur = read();
       if (!cur.date) return;
+      cur.updatedAt = Date.now();
       const i = state.shifts.findIndex((s) => s.id === cur.id);
       if (i >= 0) state.shifts[i] = cur; else state.shifts.push(cur);
       save(); closeSheet(); ui.sel = cur.date; [ui.calY, ui.calM] = parseYmd(cur.date); render();
@@ -579,10 +596,30 @@ function openShift(sh) {
   });
 }
 
+/** 入力した順番（新しいほど大きい）。古いシフトは id に含まれる作成時刻を使う */
+const enteredAt = (sh) => sh.updatedAt || parseInt(String(sh.id).slice(0, 8), 36) || 0;
+
+/** 職場ごとの勤務時間の履歴（最近入力した順・重複なし・最大 n 件）。workplaceId が null なら単発 */
+function timeHistory(workplaceId, n = 5) {
+  const seen = new Set();
+  const out = [];
+  const list = state.shifts
+    .filter((s) => (s.workplaceId || null) === (workplaceId || null) && s.start && s.end)
+    .sort((a, b) => enteredAt(b) - enteredAt(a));
+  for (const s of list) {
+    const k = `${s.start}|${s.end}|${Number(s.breakMin) || 0}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ start: s.start, end: s.end, breakMin: Number(s.breakMin) || 0 });
+    if (out.length >= n) break;
+  }
+  return out;
+}
+
 function applyLastTimes(sh) {
   if (!sh.workplaceId) return;
-  const last = state.shifts.filter((s) => s.workplaceId === sh.workplaceId && s.start).sort((a, b) => b.date.localeCompare(a.date))[0];
-  if (last) Object.assign(sh, { start: last.start, end: last.end, breakMin: last.breakMin });
+  const last = timeHistory(sh.workplaceId, 1)[0];
+  if (last) Object.assign(sh, last);
 }
 
 /* --- バイト先 --- */
