@@ -134,6 +134,9 @@ function viewCalendar() {
     </div>
     <div class="legend">${legendItems.join('')}</div>
     <div class="card">
+      ${!state.workplaces.length && !state.shifts.length ? `<div class="banner" style="margin:0 0 10px;padding:10px;border:1px solid var(--accent);border-radius:10px">
+        <div class="small" style="margin-bottom:6px">以前のデータがある場合は、バックアップから戻せます。</div>
+        <button class="btn sm sub block" data-act="import">バックアップから復元</button></div>` : ''}
       <div class="row between"><h2>${fmtDate(ui.sel)}</h2><button class="btn sm sub" data-act="add-shift">＋ シフト追加</button></div>
       ${list}
     </div>
@@ -350,13 +353,16 @@ function viewSettings() {
     </div>
     <div class="card">
       <h2>バックアップ</h2>
-      <p class="note">データはこの端末のブラウザの中だけに保存されています。アプリを修正・更新してもデータはそのまま残りますが、機種変更やブラウザのデータ削除に備えて、ときどきファイルに書き出しておいてください（iCloud Drive などに保存しておくと安心です）。</p>
+      <p class="note">データはこの iPhone の中だけに保存されています。iPhone の故障・機種変更・アプリの削除に備えて、ときどきバックアップを iCloud Drive に保存してください。</p>
       <p class="small muted">最後のバックアップ：${localStorage.getItem(LAST_BACKUP) ? fmtDate(localStorage.getItem(LAST_BACKUP)) + `（${daysSinceBackup()}日前）` : 'まだありません'}</p>
-      <div class="actions">
-        <button class="btn ghost" data-act="export">書き出す</button>
-        <button class="btn ghost" data-act="import">読み込む</button>
-      </div>
-      <input type="file" id="import-file" accept="application/json,.json" hidden>
+      <button class="btn block" data-act="export">バックアップを保存</button>
+      <button class="btn ghost block" data-act="import" style="margin-top:8px">バックアップから復元</button>
+      <details class="note" style="margin-top:10px">
+        <summary><b>保存と復元のやり方</b></summary>
+        <p><b>保存</b>：「バックアップを保存」→ 出てきたメニューで「"ファイル"に保存」→「iCloud Drive」を選んで「保存」。</p>
+        <p><b>復元</b>：「バックアップから復元」→ iCloud Drive から一番新しい日付の <code>shift-backup-…json</code> を選ぶ。</p>
+        <p>機種変更のときは、新しい iPhone でこのアプリをホーム画面に追加してから、同じように復元してください。</p>
+      </details>
     </div>
     <div class="card note">
       <p>シフト ${state.shifts.length}件 ／ 振込実績 ${state.payments.length}件</p>
@@ -665,8 +671,6 @@ function bindView(view) {
     }
     if (act === 'import') return $('#import-file').click();
   };
-  const file = $('#import-file', view);
-  if (file) file.onchange = () => importData(file.files[0]);
 }
 
 function unexported() { return state.shifts.filter((s) => !s.icsExported); }
@@ -696,9 +700,19 @@ function download(text, filename, type) {
   setTimeout(() => URL.revokeObjectURL(a.href), 60000);
 }
 function exportData() {
-  download(JSON.stringify(state, null, 2), `shift-backup-${today()}.json`, 'application/json');
-  localStorage.setItem(LAST_BACKUP, today());
-  render();
+  const name = `shift-backup-${today()}.json`;
+  const text = JSON.stringify({ ...state, backupAt: new Date().toISOString() }, null, 2);
+  const done = () => { localStorage.setItem(LAST_BACKUP, today()); render(); };
+  const file = new File([text], name, { type: 'application/json' });
+  // iPhone では共有メニューを開き、「"ファイル"に保存」で iCloud Drive に保存できるようにする
+  if (navigator.canShare?.({ files: [file] })) {
+    navigator.share({ files: [file] }).then(done).catch((err) => {
+      if (err.name !== 'AbortError') { download(text, name, 'application/json'); done(); }
+    });
+    return;
+  }
+  download(text, name, 'application/json');
+  done();
 }
 function daysSinceBackup() {
   const last = localStorage.getItem(LAST_BACKUP);
@@ -726,13 +740,21 @@ function banners() {
 async function importData(file) {
   if (!file) return;
   try {
-    const data = migrate(JSON.parse(await file.text()));
-    if (!confirm('今のデータをこのファイルの内容で置き換えます。よろしいですか？')) return;
+    const raw = JSON.parse(await file.text());
+    const data = migrate(raw);
+    delete data.backupAt;
+    const when = raw.backupAt ? new Date(raw.backupAt).toLocaleString('ja-JP') : file.name;
+    const isEmpty = !state.workplaces.length && !state.shifts.length && !state.payments.length;
+    const msg = `${when} のバックアップ\nバイト先 ${data.workplaces.length}件・シフト ${data.shifts.length}件・振込実績 ${data.payments.length}件\n\n`
+      + (isEmpty ? 'このデータを復元します。' : '今のデータは消えて、このバックアップの内容に置き換わります。復元しますか？');
+    if (!confirm(msg)) return;
     if (loadProblem?.kind === 'broken') loadProblem = null;
     state = data;
-    save(); render(); alert('読み込みました');
+    save(); render(); alert('復元しました');
   } catch (err) { alert('読み込めませんでした：' + err.message); }
+  finally { $('#import-file').value = ''; }
 }
+$('#import-file').addEventListener('change', (e) => importData(e.target.files[0]));
 
 $$('.tabbar button').forEach((b) => b.addEventListener('click', () => {
   ui.tab = b.dataset.tab;
