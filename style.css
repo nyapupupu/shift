@@ -201,3 +201,5 @@ details summary { cursor: pointer; }
 .mcal .mday.picked { background: var(--accent); }
 .mcal .mday.picked .d { color: #fff; font-weight: 700; }
 .mcal .empty-cell { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.week-row { padding: 7px 0; border-top: 1px solid var(--line); }
+.hb { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; white-space: nowrap; }

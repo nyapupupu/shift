@@ -115,3 +115,21 @@ test('業務委託とアルバイトの交通費・税金用まとめ', async ()
   const t27 = taxSummary(state, 2027);
   assert.deepEqual(t27.employee.est, { wage: 4800, transport: 400, expense: 0, count: 1 }); // 2026/4から時給1,200円
 });
+
+test('週・月の労働時間', async () => {
+  const { workMinutesBetween, weeksOfMonth } = await import('../calc.js');
+  const w = weeksOfMonth(2026, 11); // 2026/11/1 は日曜
+  assert.equal(w.length, 5);
+  assert.deepEqual(w[0], { from: '2026-11-01', to: '2026-11-07' });
+  assert.deepEqual(w[4], { from: '2026-11-29', to: '2026-12-05' });
+  const w2 = weeksOfMonth(2026, 12); // 12/1 は火曜 → 11/29 から
+  assert.deepEqual(w2[0], { from: '2026-11-29', to: '2026-12-05' });
+  assert.deepEqual(w2.at(-1), { from: '2026-12-27', to: '2027-01-02' });
+  const state = { workplaces: [cafe], shifts: [
+    { id: 'a', workplaceId: 'w1', date: '2026-11-30', start: '10:00', end: '15:00', breakMin: 60 },
+    { id: 'b', workplaceId: 'w1', date: '2026-12-01', start: '22:00', end: '02:00', breakMin: 0 },
+    { id: 'c', workplaceId: null, date: '2026-12-03', oneOff: { daily: 7000 } },
+  ], payments: [] };
+  assert.deepEqual(workMinutesBetween(state, '2026-11-29', '2026-12-05'), { total: 480, count: 3, bySrc: { w1: 480, oneoff: 0 } });
+  assert.equal(workMinutesBetween(state, '2026-12-01', '2026-12-31').total, 240);
+});

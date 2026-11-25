@@ -203,3 +203,33 @@ export function paymentBreakdown(p) {
   const gross = amount + deduction;            // 総支給額（交通費込み）
   return { amount, transport, deduction, gross, wageGross: gross - transport };
 }
+
+/** from〜to（両端を含む 'YYYY-MM-DD'）に働いた時間（分）。休憩を除いた時間で、職場（集計単位）ごとの内訳も返す */
+export function workMinutesBetween(state, from, to) {
+  const wpById = Object.fromEntries(state.workplaces.map((w) => [w.id, w]));
+  const bySrc = {};
+  let total = 0, count = 0;
+  for (const sh of state.shifts) {
+    if (sh.date < from || sh.date > to) continue;
+    const wp = sh.workplaceId ? wpById[sh.workplaceId] : null;
+    if (sh.workplaceId && !wp) continue;
+    const min = shiftMinutes(sh).paidMin;
+    total += min; count += 1;
+    const src = sourceOf(sh, wp);
+    bySrc[src] = (bySrc[src] || 0) + min;
+  }
+  return { total, count, bySrc };
+}
+
+/** その月にかかる週（日曜はじまり）の一覧。前後の月にはみ出す日も含めて1週間分を返す */
+export function weeksOfMonth(y, m) {
+  const first = new Date(y, m - 1, 1);
+  const start = new Date(y, m - 1, 1 - first.getDay());
+  const out = [];
+  const fmt = (d) => ymd(d.getFullYear(), d.getMonth() + 1, d.getDate());
+  for (let d = start; d.getFullYear() * 12 + d.getMonth() <= y * 12 + (m - 1); d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 7)) {
+    const end = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 6);
+    out.push({ from: fmt(d), to: fmt(end) });
+  }
+  return out;
+}

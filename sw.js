@@ -1,5 +1,5 @@
 // オフラインでも開けるようにするサービスワーカー（ネット優先、失敗したらキャッシュ）
-const CACHE = 'shiftpay-v8';
+const CACHE = 'shiftpay-v9';
 const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'calc.js', 'holidays.js', 'ics.js', 'migrate.js', 'manifest.webmanifest', 'icon.svg'];
 self.addEventListener('install', (e) => e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting())));
 self.addEventListener('activate', (e) => e.waitUntil(

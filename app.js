@@ -2,6 +2,7 @@ import {
   pad, ymd, ym, parseYmd, daysInMonth, addMonths, rateFor, shiftMinutes, shiftWage, payDateFor,
   aggregate, paymentsByMonth, paymentBreakdown, ONEOFF, payBasis,
   ONEOFF_CONTRACT, CONTRACTOR, contractOf, contractOfSource, shiftTransport, taxSummary,
+  workMinutesBetween, weeksOfMonth,
 } from './calc.js';
 import { holidayName } from './holidays.js';
 import { migrate, NewerDataError, CURRENT_VERSION } from './migrate.js';
@@ -246,7 +247,30 @@ function viewMonth() {
         ? '給料日ベース：各バイトの締め日・給料日の設定から、この月に振り込まれる分を集計しています。'
         : '勤務日ベース：この月に働いた分を集計しています（振込実績の入力は給料日ベースで行います）。'}</p>
     </div>
+    ${hoursCard(y, m)}
     ${cards || '<div class="card empty">設定タブからバイト先を登録するか、カレンダーからシフトを追加してください。</div>'}`;
+}
+
+/** 労働時間の内訳（職場ごとの色の点＋時間） */
+const srcBreakdown = (bySrc) => Object.entries(bySrc).filter(([, v]) => v > 0)
+  .map(([src, v]) => `<span class="hb"><i class="dot" style="background:${sourceColor(src)}"></i>${esc(sourceName(src))} ${hm(v)}</span>`).join('');
+
+/** 月収画面の「労働時間」：その月の合計と週ごとの合計（勤務日ベース・日曜はじまり） */
+function hoursCard(y, m) {
+  const key = ym(y, m);
+  const month = workMinutesBetween(state, `${key}-01`, `${key}-${pad(daysInMonth(y, m))}`);
+  const weeks = weeksOfMonth(y, m).map((w) => ({ ...w, ...workMinutesBetween(state, w.from, w.to) }));
+  const rows = weeks.map((w) => `<div class="week-row">
+      <div class="row between"><span>${fmtDate(w.from)}〜${fmtDate(w.to)}</span><b class="num">${hm(w.total)}<span class="muted small">${w.count ? `（${w.count}回）` : ''}</span></b></div>
+      ${Object.keys(w.bySrc).length > 1 ? `<div class="small muted">${srcBreakdown(w.bySrc)}</div>` : ''}
+    </div>`).join('');
+  return `<div class="card">
+    <div class="row between"><h2 style="margin:0">${m}月の労働時間</h2><b class="big num">${hm(month.total)}</b></div>
+    <div class="muted small" style="margin-bottom:6px">${month.count}回${Object.keys(month.bySrc).length > 1 ? '　' + srcBreakdown(month.bySrc) : ''}</div>
+    <div class="subhead" style="margin-top:8px">週ごと</div>
+    ${rows}
+    <p class="note">働いた日で集計しています（休憩を除く）。週は日曜〜土曜で、月をまたぐ週は前後の月の日も含めた1週間の合計です。</p>
+  </div>`;
 }
 
 /* ========== 年収 ========== */
@@ -361,6 +385,7 @@ function viewYear() {
         <tfoot><tr><td>合計</td><td class="num">${yen(tot.eW)}</td><td class="num">${yen(tot.eT)}</td>${showActual ? `<td class="num">${yen(tot.amt)}</td><td class="num">${yen(tot.aT)}</td>` : ''}</tr></tfoot>
       </table></div>
     </div>
+    ${yearHoursCard(y)}
     <div class="card">
       <h2>バイト先別</h2>
       ${srcRows ? `<div class="table-wrap"><table><thead>${head}</thead><tbody>${srcRows}</tbody></table></div>` : '<div class="empty">データがありません</div>'}
@@ -372,6 +397,23 @@ function viewYear() {
       <p>経費は交通費しか入っていません。ほかの経費や、確定申告が必要かどうかは、国税庁の案内や税務署で確認してください。</p>
     </div>
     <button class="btn ghost block" data-act="csv" style="margin-bottom:12px">${y}年の明細をCSVで書き出す（確定申告用）</button>`;
+}
+
+/** 年収画面の「月ごとの労働時間」（勤務日ベース） */
+function yearHoursCard(y) {
+  let total = 0, count = 0;
+  const rows = [];
+  for (let m = 1; m <= 12; m++) {
+    const key = ym(y, m);
+    const r = workMinutesBetween(state, `${key}-01`, `${key}-${pad(daysInMonth(y, m))}`);
+    total += r.total; count += r.count;
+    rows.push(`<tr><td>${m}月</td><td class="num">${r.count}回</td><td class="num">${hm(r.total)}</td></tr>`);
+  }
+  return `<div class="card">
+    <h2>月ごとの労働時間 <span class="muted small">（働いた日ベース）</span></h2>
+    <div class="table-wrap"><table><thead><tr><th></th><th>回数</th><th>労働時間</th></tr></thead><tbody>${rows.join('')}</tbody>
+      <tfoot><tr><td>合計</td><td class="num">${count}回</td><td class="num">${hm(total)}</td></tr></tfoot></table></div>
+  </div>`;
 }
 
 /* ---------- 年収の目安ライン ---------- */
