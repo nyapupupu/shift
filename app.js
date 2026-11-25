@@ -304,11 +304,21 @@ function viewSettings() {
     </div>
     <div class="card">
       <h2>Apple カレンダーに追加</h2>
-      <p class="note">シフトをカレンダー用のファイル（.ics）にして開きます。iPhone では「すべてを追加」を押すとカレンダーに入ります。自動では同期しないため、書き出した後にシフトを変更・削除した場合は、カレンダー側でも直してください。</p>
-      <div class="actions">
-        <button class="btn sub" data-act="ics-new" ${unexported().length ? '' : 'disabled'}>まだ追加していないシフト（${unexported().length}件）</button>
-      </div>
-      <button class="btn sm ghost block" data-act="ics-future" style="margin-top:8px">今日以降のシフトをすべて（${state.shifts.filter((s) => s.date >= today()).length}件）</button>
+      <p class="note">シフトをカレンダー用のファイル（.ics）にして開きます。自動では同期しないため、iPhone に「バイト」専用のカレンダーを作り、シフトはそこにだけ入れる使い方をおすすめします。シフトを変えたり消したりしたときは、そのカレンダーを丸ごと消して入れ直します。</p>
+      <details class="note" style="margin:6px 0 10px">
+        <summary><b>はじめての設定と入れ直しの手順</b></summary>
+        <p><b>はじめに（1回だけ）</b><br>
+        ① iPhone の「カレンダー」アプリ →「カレンダー」→「カレンダーを追加」で「バイト」を作る<br>
+        ② 下の「すべてのシフトを入れ直す」を押す →「すべてを追加」→ 入れ先に「バイト」を選ぶ</p>
+        <p><b>シフトを追加しただけのとき</b><br>「まだ追加していないシフト」を押して、同じように「バイト」に追加します。</p>
+        <p><b>シフトを変更・削除したとき</b><br>
+        ①「カレンダー」アプリ →「カレンダー」→「バイト」の ⓘ →「カレンダーを削除」<br>
+        ② もう一度「バイト」を作る<br>
+        ③「すべてのシフトを入れ直す」を押して「バイト」に追加</p>
+        <p>追加するときに入れ先を選べない場合は、iPhone の「設定」→「カレンダー」→「デフォルトカレンダー」を一時的に「バイト」にしてから追加してください。</p>
+      </details>
+      <button class="btn block" data-act="ics-all" ${state.shifts.length ? '' : 'disabled'}>すべてのシフトを入れ直す（${state.shifts.length}件）</button>
+      <button class="btn sub block" data-act="ics-new" style="margin-top:8px" ${unexported().length ? '' : 'disabled'}>まだ追加していないシフトだけ（${unexported().length}件）</button>
     </div>
     <div class="card">
       <h2>バックアップ</h2>
@@ -618,7 +628,10 @@ function bindView(view) {
     if (act === 'export') return exportData();
     if (act === 'ics-month') return exportIcs(state.shifts.filter((s) => s.date.startsWith(ym(ui.calY, ui.calM))), `shift-${ym(ui.calY, ui.calM)}.ics`);
     if (act === 'ics-new') return exportIcs(unexported(), `shift-new-${today()}.ics`);
-    if (act === 'ics-future') return exportIcs(state.shifts.filter((s) => s.date >= today()), `shift-from-${today()}.ics`);
+    if (act === 'ics-all') {
+      if (!confirm('iPhone の「バイト」カレンダーを先に削除して、作り直しましたか？\n（残ったままだと、同じ予定が2つずつ入ります）')) return;
+      return exportIcs(state.shifts, `shift-all-${today()}.ics`, { skipWarning: true });
+    }
     if (act === 'import') return $('#import-file').click();
   };
   const file = $('#import-file', view);
@@ -627,10 +640,10 @@ function bindView(view) {
 
 function unexported() { return state.shifts.filter((s) => !s.icsExported); }
 
-function exportIcs(shifts, filename) {
+function exportIcs(shifts, filename, { skipWarning = false } = {}) {
   if (!shifts.length) return alert('書き出すシフトがありません');
   const already = shifts.filter((s) => s.icsExported).length;
-  if (already && !confirm(`${shifts.length}件のうち${already}件は、以前カレンダーに追加済みです。もう一度追加すると、カレンダーに同じ予定が2つ入ることがあります。続けますか？`)) return;
+  if (already && !skipWarning && !confirm(`${shifts.length}件のうち${already}件は、以前カレンダーに追加済みです。もう一度追加すると、カレンダーに同じ予定が2つ入ることがあります。続けますか？`)) return;
   const d = new Date();
   const stamp = `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
   const file = new File([shiftsToIcs(shifts, state.workplaces, stamp)], filename, { type: 'text/calendar' });
