@@ -256,12 +256,15 @@ function viewYear() {
   const pays = paymentsByMonth(state);
   const rows = [];
   const tot = { eW: 0, eT: 0, amt: 0, aT: 0, ded: 0, gross: 0 };
+  // 交通費の内訳（emp: アルバイト等の通勤手当、con: 業務委託で支払われた交通費）
+  const split = { eTemp: 0, eTcon: 0, aTemp: 0, aTcon: 0 };
   const perSrc = {};
   for (let m = 1; m <= 12; m++) {
     const key = ym(y, m);
     let eW = 0, eT = 0, amt = 0, aT = 0, ded = 0, gross = 0, has = false;
     for (const [src, e] of Object.entries(agg[key] || {})) {
       eW += e.wage; eT += e.transport;
+      if (isContractSrc(src)) split.eTcon += e.transport; else split.eTemp += e.transport;
       const ps = (perSrc[src] ||= { eW: 0, eT: 0, amt: 0, aT: 0, ded: 0, gross: 0 });
       ps.eW += e.wage; ps.eT += e.transport;
     }
@@ -269,6 +272,7 @@ function viewYear() {
       for (const [src, p] of Object.entries(pays[key] || {})) {
         const b = paymentBreakdown(p); has = true;
         amt += b.amount; aT += b.transport; ded += b.deduction; gross += b.gross;
+        if (isContractSrc(src)) split.aTcon += b.transport; else split.aTemp += b.transport;
         const ps = (perSrc[src] ||= { eW: 0, eT: 0, amt: 0, aT: 0, ded: 0, gross: 0 });
         ps.amt += b.amount; ps.aT += b.transport; ps.ded += b.deduction; ps.gross += b.gross;
       }
@@ -323,6 +327,8 @@ function viewYear() {
       <h2>${y}年 実際に振り込まれた額</h2>
       <div class="kv"><span class="k">振込額の合計</span><b class="num big">${yen(tot.amt)}</b></div>
       <div class="kv"><span class="k">　うち交通費</span><b class="num">${yen(tot.aT)}</b></div>
+      ${split.aTemp && split.aTcon ? `<div class="kv small"><span class="k">　　アルバイト（通勤手当）</span><span class="num">${yen(split.aTemp)}</span></div>
+      <div class="kv small"><span class="k">　　業務委託</span><span class="num">${yen(split.aTcon)}</span></div>` : ''}
       <div class="kv"><span class="k">　うち給与・報酬（手取り）</span><span class="num">${yen(tot.amt - tot.aT)}</span></div>
       <div class="sep"></div>
       <div class="kv"><span class="k">控除額の合計（源泉所得税など）</span><span class="num">${yen(tot.ded)}</span></div>
@@ -342,7 +348,8 @@ function viewYear() {
       <h2>${y}年 見込み</h2>
       <div class="stat-grid">
         <div class="stat"><div class="k">給与・報酬</div><div class="v">${yen(tot.eW)}</div></div>
-        <div class="stat"><div class="k">交通費</div><div class="v">${yen(tot.eT)}</div></div>
+        <div class="stat"><div class="k">交通費</div><div class="v">${yen(tot.eT)}</div>
+          ${split.eTemp && split.eTcon ? `<div class="muted small">アルバイト ${yen(split.eTemp)}<br>業務委託 ${yen(split.eTcon)}</div>` : ''}</div>
       </div>
       <div class="kv" style="margin-top:8px"><span class="k">合計（給与・報酬＋交通費）</span><b class="num">${yen(tot.eW + tot.eT)}</b></div>
     </div>
