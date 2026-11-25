@@ -99,12 +99,43 @@ export function payDateFor(shift, wp) {
   return ymd(py, pm, pd);
 }
 
-export const ONEOFF = 'oneoff';
-export const sourceOf = (shift) => shift.workplaceId || ONEOFF;
+export const ONEOFF = 'oneoff';                 // 単発（アルバイト）
+export const ONEOFF_CONTRACT = 'oneoff-contract'; // 単発（業務委託）
+export const EMPLOYEE = 'employee';
+export const CONTRACTOR = 'contractor';
+
+/** 契約の種類：アルバイト等（給与）か業務委託（報酬）か */
+export const contractOf = (shift, wp) =>
+  ((wp ? wp.contractType : shift.oneOff?.contractType) === CONTRACTOR ? CONTRACTOR : EMPLOYEE);
+
+/** 集計の単位（バイト先のID、または単発の区分） */
+export const sourceOf = (shift, wp) =>
+  shift.workplaceId || (contractOf(shift, wp) === CONTRACTOR ? ONEOFF_CONTRACT : ONEOFF);
+
+/** 集計単位の契約の種類 */
+export function contractOfSource(state, src) {
+  if (src === ONEOFF_CONTRACT) return CONTRACTOR;
+  if (src === ONEOFF) return EMPLOYEE;
+  return state.workplaces.find((w) => w.id === src)?.contractType === CONTRACTOR ? CONTRACTOR : EMPLOYEE;
+}
+
+/**
+ * 1シフトの交通費の内訳
+ * paid: 支払われる交通費（見込みの振込額に含める）
+ * expense: 業務委託で経費になる交通費（実際にかかった額）
+ * アルバイトは交通費＝通勤手当として扱い、paid に入れる（経費にはならない）。
+ */
+export function shiftTransport(shift, wp) {
+  const t = Math.floor(Number(shift.transport) || 0);
+  if (contractOf(shift, wp) === EMPLOYEE) return { paid: t, expense: 0 };
+  const paidFlag = wp ? wp.transportPaid : shift.oneOff?.transportPaid;
+  return { paid: paidFlag === false ? 0 : t, expense: t };
+}
 
 /**
  * 月ごとの見込みを集計する。basis: 'pay'（給料日基準）| 'work'（勤務日基準）
- * 戻り値: { 'YYYY-MM': { [sourceId]: {count, minutes, wage, transport} } }
+ * 戻り値: { 'YYYY-MM': { [sourceId]: {count, minutes, wage, transport, expense} } }
+ * transport は支払われる交通費、expense は業務委託の経費になる交通費。
  */
 export function aggregate(state, basis = 'pay') {
   const wpById = Object.fromEntries(state.workplaces.map((w) => [w.id, w]));
@@ -113,14 +144,48 @@ export function aggregate(state, basis = 'pay') {
     const wp = sh.workplaceId ? wpById[sh.workplaceId] : null;
     if (sh.workplaceId && !wp) continue;
     const month = (basis === 'pay' ? payDateFor(sh, wp) : sh.date).slice(0, 7);
-    const src = sourceOf(sh);
-    const bucket = ((out[month] ||= {})[src] ||= { count: 0, minutes: 0, wage: 0, transport: 0 });
+    const src = sourceOf(sh, wp);
+    const bucket = ((out[month] ||= {})[src] ||= { count: 0, minutes: 0, wage: 0, transport: 0, expense: 0 });
+    const tr = shiftTransport(sh, wp);
     bucket.count += 1;
     bucket.minutes += shiftMinutes(sh).paidMin;
     bucket.wage += shiftWage(sh, wp);
-    bucket.transport += Math.floor(Number(sh.transport) || 0);
+    bucket.transport += tr.paid;
+    bucket.expense += tr.expense;
   }
   return out;
+}
+
+/**
+ * 税金用の年間まとめ
+ * - 給与（アルバイト等）：支給日の年で数える。交通費（通勤手当）は収入から分ける。
+ * - 業務委託：見込みは仕事をした日の年で数える。支払われた交通費は収入、かかった交通費は経費。
+ * - 実績（振込）はどちらも振り込まれた月の年で数える。
+ */
+export function taxSummary(state, year) {
+  const y = String(year);
+  const empty = () => ({ wage: 0, transport: 0, expense: 0, count: 0 });
+  const emptyActual = () => ({ count: 0, amount: 0, transport: 0, deduction: 0, gross: 0 });
+  const res = {
+    employee: { est: empty(), actual: emptyActual() },
+    contractor: { est: empty(), actual: emptyActual() },
+  };
+  const add = (t, e) => { t.wage += e.wage; t.transport += e.transport; t.expense += e.expense; t.count += e.count; };
+  for (const [month, bySrc] of Object.entries(aggregate(state, 'pay'))) {
+    if (!month.startsWith(y)) continue;
+    for (const [src, e] of Object.entries(bySrc)) if (contractOfSource(state, src) === EMPLOYEE) add(res.employee.est, e);
+  }
+  for (const [month, bySrc] of Object.entries(aggregate(state, 'work'))) {
+    if (!month.startsWith(y)) continue;
+    for (const [src, e] of Object.entries(bySrc)) if (contractOfSource(state, src) === CONTRACTOR) add(res.contractor.est, e);
+  }
+  for (const p of state.payments) {
+    if (!p.month.startsWith(y)) continue;
+    const b = paymentBreakdown(p);
+    const a = res[contractOfSource(state, p.source)].actual;
+    a.count += 1; a.amount += b.amount; a.transport += b.transport; a.deduction += b.deduction; a.gross += b.gross;
+  }
+  return res;
 }
 
 /** 実績（振込）の集計: { 'YYYY-MM': { [sourceId]: payment } } */

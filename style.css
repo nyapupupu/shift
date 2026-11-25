@@ -184,3 +184,6 @@ details summary { cursor: pointer; }
 .daychk span { display: block; text-align: center; padding: 6px 0; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; cursor: pointer; }
 .daychk input:checked + span { background: var(--accent); border-color: var(--accent); color: #fff; }
 .daychk input:focus-visible + span { outline: 2px solid var(--accent); }
+.tag.ct { background: #fff1e0; color: #b45f06; }
+@media (prefers-color-scheme: dark) { .tag.ct { background: #3a2a14; color: #f5b461; } }
+.subhead { font-weight: 700; font-size: 14px; margin: 4px 0 4px; }

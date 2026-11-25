@@ -1,6 +1,7 @@
 import {
   pad, ymd, ym, parseYmd, daysInMonth, addMonths, rateFor, shiftMinutes, shiftWage, payDateFor,
   aggregate, paymentsByMonth, paymentBreakdown, ONEOFF, payBasis,
+  ONEOFF_CONTRACT, CONTRACTOR, contractOf, contractOfSource, shiftTransport, taxSummary,
 } from './calc.js';
 import { holidayName } from './holidays.js';
 import { migrate, NewerDataError, CURRENT_VERSION } from './migrate.js';
@@ -69,8 +70,10 @@ function basisText(b) {
   return b.premium ? `時給 ${yen(b.base)} ＋ 上乗せ ${yen(b.premium)}` : `時給 ${yen(b.base)}`;
 }
 const wpById = (id) => state.workplaces.find((w) => w.id === id);
-const sourceName = (src) => (src === ONEOFF ? '単発' : wpById(src)?.name ?? '(削除済み)');
-const sourceColor = (src) => (src === ONEOFF ? ONEOFF_COLOR : wpById(src)?.color ?? ONEOFF_COLOR);
+const sourceName = (src) => (src === ONEOFF ? '単発' : src === ONEOFF_CONTRACT ? '単発（業務委託）' : wpById(src)?.name ?? '(削除済み)');
+const sourceColor = (src) => (src === ONEOFF || src === ONEOFF_CONTRACT ? ONEOFF_COLOR : wpById(src)?.color ?? ONEOFF_COLOR);
+const isContractSrc = (src) => contractOfSource(state, src) === CONTRACTOR;
+const contractTag = (isContract) => (isContract ? ' <span class="tag ct">業務委託</span>' : '');
 const shiftColor = (sh) => (sh.workplaceId ? wpById(sh.workplaceId)?.color : sh.oneOff?.color) || ONEOFF_COLOR;
 const shiftName = (sh) => (sh.workplaceId ? wpById(sh.workplaceId)?.name : sh.oneOff?.name || '単発');
 const num = (v) => (v === '' || v == null ? 0 : Number(v));
@@ -115,7 +118,7 @@ function viewCalendar() {
     if (!sh.date.startsWith(ym(y, m))) continue;
     const wp = sh.workplaceId ? wpById(sh.workplaceId) : null;
     if (sh.workplaceId && !wp) continue;
-    wage += shiftWage(sh, wp); transport += num(sh.transport); count++; minutes += shiftMinutes(sh).paidMin;
+    wage += shiftWage(sh, wp); transport += shiftTransport(sh, wp).paid; count++; minutes += shiftMinutes(sh).paidMin;
   }
 
   const t = today();
@@ -192,11 +195,13 @@ function viewMonth() {
   const est = aggregate(state, ui.basis)[key] || {};
   const pays = paymentsByMonth(state)[key] || {};
   const sources = [...new Set([...state.workplaces.map((w) => w.id), ...Object.keys(est), ...Object.keys(pays)])]
-    .filter((s) => est[s] || pays[s] || (s !== ONEOFF && wpById(s)));
+    .filter((s) => est[s] || pays[s] || (s !== ONEOFF && s !== ONEOFF_CONTRACT && wpById(s)));
 
   let eW = 0, eT = 0, aAmt = 0, aT = 0;
   const cards = sources.map((src) => {
-    const e = est[src] || { count: 0, minutes: 0, wage: 0, transport: 0 };
+    const e = est[src] || { count: 0, minutes: 0, wage: 0, transport: 0, expense: 0 };
+    const ct = isContractSrc(src);
+    const W = ct ? '報酬' : '給与';
     const p = pays[src];
     eW += e.wage; eT += e.transport;
     let actual = '';
@@ -208,16 +213,17 @@ function viewMonth() {
         <div class="row between"><span class="tag done">振込済み${p.date ? ' ' + fmtDate(p.date) : ''}</span><button class="btn sm ghost" data-act="edit-pay" data-src="${src}">編集</button></div>
         <div class="kv"><span class="k">振込額</span><b class="num">${yen(b.amount)}</b></div>
         <div class="kv"><span class="k">　うち交通費</span><span class="num">${yen(b.transport)}</span></div>
-        <div class="kv"><span class="k">　うち給与</span><span class="num">${yen(b.amount - b.transport)}</span></div>
-        ${b.deduction ? `<div class="kv"><span class="k">控除（源泉税など）</span><span class="num">${yen(b.deduction)}</span></div>` : ''}`;
+        <div class="kv"><span class="k">　うち${W}</span><span class="num">${yen(b.amount - b.transport)}</span></div>
+        ${b.deduction ? `<div class="kv"><span class="k">${ct ? '源泉徴収税額' : '控除（源泉税など）'}</span><span class="num">${yen(b.deduction)}</span></div>` : ''}`;
     } else if (ui.basis === 'pay') {
       actual = `<div class="sep"></div><button class="btn sm sub block" data-act="edit-pay" data-src="${src}">振り込まれた金額を入力</button>`;
     }
     return `<div class="card">
-      <div class="row"><i class="dot lg" style="background:${sourceColor(src)}"></i><h2 class="grow" style="margin:0">${esc(sourceName(src))}</h2><span class="muted small">${e.count}回・${hm(e.minutes)}</span></div>
-      <div class="kv" style="margin-top:6px"><span class="k">見込み 給与</span><span class="num">${yen(e.wage)}</span></div>
-      <div class="kv"><span class="k">見込み 交通費</span><span class="num">${yen(e.transport)}</span></div>
+      <div class="row"><i class="dot lg" style="background:${sourceColor(src)}"></i><h2 class="grow" style="margin:0">${esc(sourceName(src))}${contractTag(ct)}</h2><span class="muted small">${e.count}回・${hm(e.minutes)}</span></div>
+      <div class="kv" style="margin-top:6px"><span class="k">見込み ${W}</span><span class="num">${yen(e.wage)}</span></div>
+      <div class="kv"><span class="k">見込み 交通費${ct ? '（支払われる分）' : ''}</span><span class="num">${yen(e.transport)}</span></div>
       <div class="kv"><span class="k">見込み 合計</span><b class="num">${yen(e.wage + e.transport)}</b></div>
+      ${ct ? `<div class="kv"><span class="k">経費になる交通費</span><span class="num">${yen(e.expense)}</span></div>` : ''}
       ${actual}
     </div>`;
   }).join('');
@@ -233,7 +239,7 @@ function viewMonth() {
     <div class="card">
       <h2>${m}月の${ui.basis === 'pay' ? '支給' : '勤務'}分</h2>
       <div class="stat-grid">
-        <div class="stat"><div class="k">見込み（給与＋交通費）</div><div class="v">${yen(eW + eT)}</div><div class="muted small">うち交通費 ${yen(eT)}</div></div>
+        <div class="stat"><div class="k">見込み（給与・報酬＋交通費）</div><div class="v">${yen(eW + eT)}</div><div class="muted small">うち交通費 ${yen(eT)}</div></div>
         <div class="stat"><div class="k">実際の振込</div><div class="v">${hasActual ? yen(aAmt) : '—'}</div><div class="muted small">${hasActual ? 'うち交通費 ' + yen(aT) : '未入力'}</div></div>
       </div>
       <p class="note">${ui.basis === 'pay'
@@ -271,23 +277,53 @@ function viewYear() {
     rows.push({ m, eW, eT, amt, aT, has });
   }
   const showActual = ui.basis === 'pay';
+  const tax = taxSummary(state, y);
+  const hasEmp = tax.employee.est.count || tax.employee.actual.count;
+  const hasCon = tax.contractor.est.count || tax.contractor.actual.count;
+  const ea = tax.employee.actual, ca = tax.contractor.actual, ee = tax.employee.est, ce = tax.contractor.est;
+  const taxCard = (hasEmp || hasCon) ? `
+    <div class="card">
+      <h2>${y}年 税金用のまとめ</h2>
+      ${hasEmp ? `
+      <div class="subhead">アルバイト・パート（給与）<span class="muted small">　給料日ベース</span></div>
+      <div class="kv"><span class="k">見込み 給与（交通費を除く）</span><b class="num">${yen(ee.wage)}</b></div>
+      <div class="kv"><span class="k">見込み 交通費（通勤手当・非課税）</span><span class="num">${yen(ee.transport)}</span></div>
+      ${ea.count ? `
+      <div class="kv"><span class="k">実績 総支給から交通費を除いた額</span><b class="num">${yen(ea.gross - ea.transport)}</b></div>
+      <div class="kv"><span class="k">実績 交通費（通勤手当）</span><span class="num">${yen(ea.transport)}</span></div>
+      <div class="kv"><span class="k">実績 控除（源泉所得税など）</span><span class="num">${yen(ea.deduction)}</span></div>` : ''}` : ''}
+      ${hasEmp && hasCon ? '<div class="sep"></div>' : ''}
+      ${hasCon ? `
+      <div class="subhead">業務委託（報酬）<span class="muted small">　仕事をした日ベース</span></div>
+      <div class="kv"><span class="k">見込み 報酬</span><span class="num">${yen(ce.wage)}</span></div>
+      <div class="kv"><span class="k">見込み 支払われる交通費（収入に含む）</span><span class="num">${yen(ce.transport)}</span></div>
+      <div class="kv"><span class="k">見込み 収入の合計</span><b class="num">${yen(ce.wage + ce.transport)}</b></div>
+      <div class="kv"><span class="k">経費：交通費</span><b class="num">${yen(ce.expense)}</b></div>
+      <div class="kv"><span class="k">収入 − 交通費</span><span class="num">${yen(ce.wage + ce.transport - ce.expense)}</span></div>
+      ${ca.count ? `
+      <div class="small muted" style="margin-top:6px">この年に振り込まれた分（実績）</div>
+      <div class="kv"><span class="k">振込額</span><span class="num">${yen(ca.amount)}</span></div>
+      <div class="kv"><span class="k">　うち交通費</span><span class="num">${yen(ca.transport)}</span></div>
+      <div class="kv"><span class="k">源泉徴収税額</span><span class="num">${yen(ca.deduction)}</span></div>
+      <div class="kv"><span class="k">支払金額（振込額＋源泉徴収税額）</span><span class="num">${yen(ca.gross)}</span></div>` : ''}` : ''}
+    </div>` : '';
   const monthRows = rows.map((r) => `<tr>
       <td>${r.m}月</td><td class="num">${yen(r.eW)}</td><td class="num">${yen(r.eT)}</td>
       ${showActual ? `<td class="num">${r.has ? yen(r.amt) : '<span class="muted">—</span>'}</td><td class="num">${r.has ? yen(r.aT) : '<span class="muted">—</span>'}</td>` : ''}
     </tr>`).join('');
   const srcRows = Object.entries(perSrc).map(([src, s]) => `<tr>
-      <td><i class="dot" style="background:${sourceColor(src)}"></i> ${esc(sourceName(src))}</td>
+      <td><i class="dot" style="background:${sourceColor(src)}"></i> ${esc(sourceName(src))}${contractTag(isContractSrc(src))}</td>
       <td class="num">${yen(s.eW)}</td><td class="num">${yen(s.eT)}</td>
       ${showActual ? `<td class="num">${yen(s.amt)}</td><td class="num">${yen(s.aT)}</td>` : ''}
     </tr>`).join('');
-  const head = `<tr><th></th><th>見込み給与</th><th>見込み交通費</th>${showActual ? '<th>振込額</th><th>うち交通費</th>' : ''}</tr>`;
+  const head = `<tr><th></th><th>見込み給与・報酬</th><th>見込み交通費</th>${showActual ? '<th>振込額</th><th>うち交通費</th>' : ''}</tr>`;
 
   const actualCard = showActual ? `
     <div class="card">
       <h2>${y}年 実際に振り込まれた額</h2>
       <div class="kv"><span class="k">振込額の合計</span><b class="num big">${yen(tot.amt)}</b></div>
       <div class="kv"><span class="k">　うち交通費</span><b class="num">${yen(tot.aT)}</b></div>
-      <div class="kv"><span class="k">　うち給与（手取り）</span><span class="num">${yen(tot.amt - tot.aT)}</span></div>
+      <div class="kv"><span class="k">　うち給与・報酬（手取り）</span><span class="num">${yen(tot.amt - tot.aT)}</span></div>
       <div class="sep"></div>
       <div class="kv"><span class="k">控除額の合計（源泉所得税など）</span><span class="num">${yen(tot.ded)}</span></div>
       <div class="kv"><span class="k">総支給額（交通費込み）</span><span class="num">${yen(tot.gross)}</span></div>
@@ -300,14 +336,15 @@ function viewYear() {
       <span class="label">${y}年</span>
       <button class="iconbtn" data-act="year-next">›</button>
     </div>
+    ${taxCard}
     <div style="text-align:center;margin-bottom:10px">${basisSeg()}</div>
     <div class="card">
       <h2>${y}年 見込み</h2>
       <div class="stat-grid">
-        <div class="stat"><div class="k">給与</div><div class="v">${yen(tot.eW)}</div></div>
+        <div class="stat"><div class="k">給与・報酬</div><div class="v">${yen(tot.eW)}</div></div>
         <div class="stat"><div class="k">交通費</div><div class="v">${yen(tot.eT)}</div></div>
       </div>
-      <div class="kv" style="margin-top:8px"><span class="k">合計（給与＋交通費）</span><b class="num">${yen(tot.eW + tot.eT)}</b></div>
+      <div class="kv" style="margin-top:8px"><span class="k">合計（給与・報酬＋交通費）</span><b class="num">${yen(tot.eW + tot.eT)}</b></div>
     </div>
     ${actualCard}
     <div class="card">
@@ -321,9 +358,10 @@ function viewYear() {
       ${srcRows ? `<div class="table-wrap"><table><thead>${head}</thead><tbody>${srcRows}</tbody></table></div>` : '<div class="empty">データがありません</div>'}
     </div>
     <div class="card note">
-      <p><b>集計の基準について</b></p>
-      <p>源泉徴収票や確定申告の「給与の収入金額」は、その年に<b>支払われた</b>給与で数えます。税金の確認には「給料日ベース」を使ってください（12月に働いて1月に振り込まれる分は翌年の扱いになります）。</p>
-      <p>源泉徴収票の金額と照らし合わせるときは、振込額ではなく「総支給額から交通費を除いた額」を見てください。そのためには、振込実績の入力で控除額（源泉所得税など）も入れておく必要があります。</p>
+      <p><b>税金用のまとめの見方</b></p>
+      <p><b>アルバイト・パート（給与）</b>：給与の収入は、その年に<b>支払われた</b>分で数えます（12月に働いて1月に振り込まれる分は翌年）。通勤手当は一定の限度額まで非課税で、給与の収入には入りません。源泉徴収票と照らし合わせるときは「総支給から交通費を除いた額」を見てください（振込実績に控除額を入れておく必要があります）。</p>
+      <p><b>業務委託（報酬）</b>：報酬と一緒に支払われた交通費も収入に入り、実際にかかった交通費は経費になります。収入は原則として仕事をした（終えた）年で数えるため、見込みは仕事をした日ベースで集計しています。一定の条件を満たす場合は、入金された日で数える方法も選べます。</p>
+      <p>経費は交通費しか入っていません。ほかの経費や、確定申告が必要かどうかは、国税庁の案内や税務署で確認してください。</p>
     </div>`;
 }
 
@@ -334,8 +372,8 @@ function viewSettings() {
     const cnt = state.shifts.filter((s) => s.workplaceId === w.id).length;
     return `<div class="shift-item" data-wp="${w.id}">
       <span class="bar" style="background:${w.color}"></span>
-      <div class="grow"><b>${esc(w.name)}</b>
-        <div class="muted small">${r ? (r.payType === 'daily' ? '日給 ' : '時給 ') + yen(r.amount) : '給与未設定'}${(w.premiums || []).map((p) => '・' + premiumText(p)).join('')}・交通費 ${yen(w.transport)}/回・${closingText(w)}</div></div>
+      <div class="grow"><b>${esc(w.name)}</b>${contractTag(w.contractType === CONTRACTOR)}
+        <div class="muted small">${r ? (r.payType === 'daily' ? '日給 ' : '時給 ') + yen(r.amount) : '給与未設定'}${(w.premiums || []).map((p) => '・' + premiumText(p)).join('')}・交通費 ${yen(w.transport)}/回${w.contractType === CONTRACTOR && w.transportPaid === false ? '（自己負担）' : ''}・${closingText(w)}</div></div>
       <span class="muted small">${cnt}件 ›</span>
     </div>`;
   }).join('');
@@ -434,6 +472,12 @@ function openShift(sh) {
           <div class="field"><label>日給（円）</label><input type="number" inputmode="numeric" name="ooDaily" value="${oo.daily ?? ''}" min="0"></div>
           <div class="field"><label>支払日</label><input type="date" name="ooPay" value="${oo.payDate || ''}"></div>
         </div>
+        <div class="field"><label>契約の種類</label>
+          <select name="ooType">
+            <option value="employee" ${oo.contractType === CONTRACTOR ? '' : 'selected'}>アルバイト（給与）</option>
+            <option value="contractor" ${oo.contractType === CONTRACTOR ? 'selected' : ''}>業務委託（報酬）</option>
+          </select></div>
+        <div class="field" id="oo-tp"><label class="check"><input type="checkbox" name="ooTP" ${oo.transportPaid === false ? '' : 'checked'}> 交通費は報酬とは別に支払われる</label></div>
         <div class="field"><span class="lbl">色</span>${colorPicker(oo.color || ONEOFF_COLOR)}</div>
       </div>
       <div class="three">
@@ -475,13 +519,14 @@ function openShift(sh) {
         dailyOverride: wid && fd.get('payMode') === 'daily' ? num(fd.get('override')) : null,
         hourlyOverride: wid && fd.get('payMode') === 'hourly' ? num(fd.get('override')) : null,
         memo: fd.get('memo').trim(),
-        oneOff: wid ? null : { name: fd.get('ooName').trim(), daily: num(fd.get('ooDaily')), color: fd.get('color'), payDate: fd.get('ooPay') },
+        oneOff: wid ? null : { name: fd.get('ooName').trim(), daily: num(fd.get('ooDaily')), color: fd.get('color'), payDate: fd.get('ooPay'), contractType: fd.get('ooType'), transportPaid: !!fd.get('ooTP') },
       };
     };
     const refresh = () => {
       const cur = read();
       const wp = cur.workplaceId ? wpById(cur.workplaceId) : null;
       $('#oneoff-fields', root).hidden = !!wp;
+      $('#oo-tp', root).hidden = f.ooType.value !== CONTRACTOR;
       $('#override-fields', root).hidden = !wp;
       f.override.hidden = !f.payMode.value;
       f.override.placeholder = f.payMode.value === 'daily' ? '日給（円）' : '時給（円）';
@@ -491,7 +536,12 @@ function openShift(sh) {
       const hol = cur.date && holidayName(cur.date);
       $('#pv', root).innerHTML = `${hol ? `<div class="small danger">${hol}</div>` : ''}
         <div class="kv"><span class="k">${basisText(b)}${paidMin ? '・' + hm(paidMin) : ''}${wp?.nightPremium && nightMin && b.kind === 'hourly' ? `（深夜${hm(nightMin)}）` : ''}</span><b>${yen(wage)}</b></div>
-        <div class="kv"><span class="k">＋ 交通費</span><span>${yen(cur.transport)}</span></div>
+        ${(() => {
+          const tr = shiftTransport(cur, wp);
+          const ct = contractOf(cur, wp) === CONTRACTOR;
+          return `<div class="kv"><span class="k">＋ 交通費${ct ? '（支払われる分）' : ''}</span><span>${yen(tr.paid)}</span></div>`
+            + (ct ? `<div class="kv"><span class="k">業務委託：経費になる交通費</span><span>${yen(tr.expense)}</span></div>` : '');
+        })()}
         <div class="kv"><span class="k">支給予定日</span><span>${cur.date ? fmtDate(payDateFor(cur, wp)) : '—'}</span></div>`;
     };
     f.wp.addEventListener('change', () => {
@@ -542,6 +592,7 @@ function openWorkplace(w) {
     id: uid(), name: '', color: COLORS[state.workplaces.length % COLORS.length],
     rates: [{ from: '2000-01-01', payType: 'hourly', amount: '' }],
     transport: 0, closingDay: 0, payMonthOffset: 1, payDay: 25, nightPremium: true,
+    contractType: 'employee', transportPaid: true,
   };
   const dayOpts = (sel, label0) => [`<option value="0" ${!Number(sel) ? 'selected' : ''}>${label0}</option>`]
     .concat(Array.from({ length: 28 }, (_, i) => `<option value="${i + 1}" ${Number(sel) === i + 1 ? 'selected' : ''}>${i + 1}日</option>`)).join('');
@@ -562,6 +613,12 @@ function openWorkplace(w) {
     <h2>${isNew ? 'バイト先を追加' : 'バイト先を編集'}</h2>
     <form id="f">
       <div class="field"><label>名前</label><input name="name" value="${esc(w.name)}" placeholder="例：カフェ" required></div>
+      <div class="field"><label>契約の種類</label>
+        <select name="contractType">
+          <option value="employee" ${w.contractType === CONTRACTOR ? '' : 'selected'}>アルバイト・パート（給与）</option>
+          <option value="contractor" ${w.contractType === CONTRACTOR ? 'selected' : ''}>業務委託（報酬）</option>
+        </select>
+        <p class="note">雇用契約なら「アルバイト・パート」、業務委託契約・請負なら「業務委託」です。インターンは契約書で確認してください。年収画面で交通費の扱いを分けて集計します。</p></div>
       <div class="field"><span class="lbl">カレンダーの色</span>${colorPicker(w.color)}</div>
       <div class="field"><span class="lbl">給与（いつから・時給か日給か・金額）</span>
         <div id="rates">${[...w.rates].sort((a, b) => a.from.localeCompare(b.from)).map(rateRow).join('')}</div>
@@ -574,6 +631,8 @@ function openWorkplace(w) {
         <p class="note">選んだ曜日・祝日（振替休日を含む）のシフトは、時給に上乗せして計算します。複数当てはまるときは高いほうを使います。年末年始など特定の日だけ時給が違うときは、シフトの入力画面で「この日だけ時給を変える」を選んでください。</p>
       </div>
       <div class="field"><label>交通費（1回あたり・円）</label><input type="number" inputmode="numeric" name="transport" value="${w.transport ?? 0}" min="0">
+        <label class="check" id="tp-field" style="margin-top:8px"><input type="checkbox" name="transportPaid" ${w.transportPaid === false ? '' : 'checked'}> 交通費は報酬とは別に支払われる</label>
+        <p class="note" id="tp-note">業務委託では、支払われない（自己負担の）交通費も経費として記録します。その場合はチェックを外して、実際にかかる交通費を入れてください。</p>
         <p class="note">シフト追加時の初期値になります。日ごとにシフト側で変更できます。</p></div>
       <div class="three">
         <div class="field"><label>締め日</label><select name="closingDay">${dayOpts(w.closingDay, '末日')}</select></div>
@@ -597,6 +656,12 @@ function openWorkplace(w) {
       const r = { from: today(), payType: lastRow ? $('[name=rType]', lastRow).value : 'hourly', amount: '' };
       rates.insertAdjacentHTML('beforeend', rateRow(r, $$('.rate-row', rates).length));
     });
+    const syncContract = () => {
+      const ct = f.contractType.value === CONTRACTOR;
+      $('#tp-field', root).hidden = !ct; $('#tp-note', root).hidden = !ct;
+    };
+    f.contractType.addEventListener('change', syncContract);
+    syncContract();
     const prems = $('#prems', root);
     prems.addEventListener('click', (e) => { if (e.target.matches('[data-rm-prem]')) e.target.closest('.prem-row').remove(); });
     $('[data-act=add-prem]', root).addEventListener('click', () => prems.insertAdjacentHTML('beforeend', premRow({ days: [0, 6], holiday: true, amount: '' })));
@@ -621,6 +686,8 @@ function openWorkplace(w) {
         transport: num(fd.get('transport')), closingDay: num(fd.get('closingDay')),
         payMonthOffset: num(fd.get('payMonthOffset')), payDay: num(fd.get('payDay')),
         nightPremium: !!fd.get('nightPremium'),
+        contractType: fd.get('contractType'),
+        transportPaid: fd.get('contractType') === CONTRACTOR ? !!fd.get('transportPaid') : true,
         premiums: $$('.prem-row', prems).map((row) => {
           const checked = $$('input[type=checkbox]:checked', row).map((c) => c.value);
           return { days: checked.filter((v) => v !== 'holiday').map(Number), holiday: checked.includes('holiday'), amount: num($('[name=pAmt]', row).value) };
@@ -640,18 +707,19 @@ function openPayment(src) {
   const existing = state.payments.find((p) => p.month === key && p.source === src);
   const est = aggregate(state, 'pay')[key]?.[src] || { wage: 0, transport: 0 };
   const wp = wpById(src);
+  const ct = isContractSrc(src);
   const defDate = wp ? ymd(ui.monY, ui.monM, Number(wp.payDay) ? Math.min(Number(wp.payDay), daysInMonth(ui.monY, ui.monM)) : daysInMonth(ui.monY, ui.monM)) : '';
   const p = existing || { id: uid(), month: key, source: src, date: defDate, amount: '', transport: est.transport, deduction: '', memo: '' };
   openSheet(`
     <h2>${esc(sourceName(src))}　${ui.monY}年${ui.monM}月の振込</h2>
     <form id="f">
-      <div class="preview small">見込み：給与 ${yen(est.wage)} ＋ 交通費 ${yen(est.transport)} ＝ <b>${yen(est.wage + est.transport)}</b></div>
+      <div class="preview small">見込み：${ct ? '報酬' : '給与'} ${yen(est.wage)} ＋ 交通費 ${yen(est.transport)} ＝ <b>${yen(est.wage + est.transport)}</b></div>
       <div class="field"><label>振込日</label><input type="date" name="date" value="${p.date || ''}"></div>
       <div class="field"><label>振り込まれた金額（円）</label><input type="number" inputmode="numeric" name="amount" value="${p.amount}" min="0" required></div>
       <div class="field"><label>そのうち交通費（円）</label><input type="number" inputmode="numeric" name="transport" value="${p.transport}" min="0">
-        <p class="note">給与明細に書かれた交通費（通勤手当）を入れてください。初期値はシフトから計算した見込み額です。</p></div>
-      <div class="field"><label>控除額（源泉所得税など・任意）</label><input type="number" inputmode="numeric" name="deduction" value="${p.deduction}" min="0">
-        <p class="note">給与明細の控除合計を入れると、総支給額（振込額＋控除額）も年収画面に出ます。</p></div>
+        <p class="note">${ct ? '報酬と一緒に支払われた交通費を入れてください。' : '給与明細に書かれた交通費（通勤手当）を入れてください。'}初期値はシフトから計算した見込み額です。</p></div>
+      <div class="field"><label>${ct ? '源泉徴収税額（任意）' : '控除額（源泉所得税など・任意）'}</label><input type="number" inputmode="numeric" name="deduction" value="${p.deduction}" min="0">
+        <p class="note">${ct ? '報酬から差し引かれた源泉徴収税額を入れると、支払金額（振込額＋源泉徴収税額）も年収画面に出ます。' : '給与明細の控除合計を入れると、総支給額（振込額＋控除額）も年収画面に出ます。'}</p></div>
       <div class="field"><label>メモ</label><input name="memo" value="${esc(p.memo)}"></div>
       <div class="actions">
         ${existing ? '<button type="button" class="btn del" data-act="del">削除</button>' : ''}

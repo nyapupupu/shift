@@ -54,7 +54,7 @@ test('月別集計（給料日基準）', () => {
     payments: [],
   };
   const agg = aggregate(state, 'pay');
-  assert.deepEqual(agg['2026-02'].w1, { count: 1, minutes: 240, wage: 4400, transport: 420 });
+  assert.deepEqual(agg['2026-02'].w1, { count: 1, minutes: 240, wage: 4400, transport: 420, expense: 0 });
   assert.equal(agg['2026-02'].oneoff.wage, 7000);
 });
 
@@ -81,4 +81,37 @@ test('この日だけ時給を変える', () => {
   // 日給設定の職場でも時給指定が優先
   const daily = { ...cafe, rates: [{ from: '2000-01-01', payType: 'daily', amount: 8000 }] };
   assert.equal(shiftWage({ date: '2026-11-25', start: '10:00', end: '12:00', hourlyOverride: 1500 }, daily), 3000);
+});
+
+test('業務委託とアルバイトの交通費・税金用まとめ', async () => {
+  const { taxSummary, aggregate, shiftTransport } = await import('../calc.js');
+  const job = { ...cafe, id: 'w1', premiums: [] };
+  const consult = { id: 'w2', contractType: 'contractor', transportPaid: true, closingDay: 0, payMonthOffset: 1, payDay: 0, nightPremium: false,
+    rates: [{ from: '2000-01-01', payType: 'daily', amount: 10000 }] };
+  const consultSelf = { ...consult, id: 'w3', transportPaid: false };
+  assert.deepEqual(shiftTransport({ transport: 500 }, job), { paid: 500, expense: 0 });
+  assert.deepEqual(shiftTransport({ transport: 500 }, consult), { paid: 500, expense: 500 });
+  assert.deepEqual(shiftTransport({ transport: 500 }, consultSelf), { paid: 0, expense: 500 });
+  assert.deepEqual(shiftTransport({ transport: 300, oneOff: { contractType: 'contractor', transportPaid: false } }, null), { paid: 0, expense: 300 });
+
+  const state = {
+    workplaces: [job, consult, consultSelf],
+    shifts: [
+      { id: 'a', workplaceId: 'w1', date: '2026-12-10', start: '10:00', end: '14:00', transport: 400 }, // 給与：支給は2027/1
+      { id: 'b', workplaceId: 'w2', date: '2026-12-10', transport: 600 },                               // 委託：2026年の収入
+      { id: 'c', workplaceId: 'w3', date: '2026-11-10', transport: 800 },
+      { id: 'd', workplaceId: null, date: '2026-11-20', oneOff: { name: '単発', daily: 7000, contractType: 'contractor', transportPaid: true }, transport: 200 },
+    ],
+    payments: [
+      { month: '2026-12', source: 'w3', amount: 9000, transport: 0, deduction: 1021 },
+      { month: '2026-12', source: 'oneoff-contract', amount: 6485, transport: 200, deduction: 715 },
+    ],
+  };
+  assert.ok(aggregate(state, 'work')['2026-11']['oneoff-contract']);
+  const t26 = taxSummary(state, 2026);
+  assert.deepEqual(t26.employee.est, { wage: 0, transport: 0, expense: 0, count: 0 });
+  assert.deepEqual(t26.contractor.est, { wage: 27000, transport: 800, expense: 1600, count: 3 });
+  assert.deepEqual(t26.contractor.actual, { count: 2, amount: 15485, transport: 200, deduction: 1736, gross: 17221 });
+  const t27 = taxSummary(state, 2027);
+  assert.deepEqual(t27.employee.est, { wage: 4800, transport: 400, expense: 0, count: 1 }); // 2026/4から時給1,200円
 });
