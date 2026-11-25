@@ -192,3 +192,12 @@ details summary { cursor: pointer; }
 .chip small { margin-left: 4px; color: var(--muted); font-size: 11px; }
 .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .chip.on small { color: #fff; }
+.bar-track { height: 10px; background: var(--bg); border-radius: 99px; overflow: hidden; margin: 6px 0 4px; border: 1px solid var(--line); }
+.bar-fill { height: 100%; background: var(--accent); border-radius: 99px; }
+.bar-fill.near { background: #f08c00; }
+.bar-fill.over { background: var(--danger); }
+.mcal { margin-bottom: 4px; }
+.mcal .mday { min-height: 48px; }
+.mcal .mday.picked { background: var(--accent); }
+.mcal .mday.picked .d { color: #fff; font-weight: 700; }
+.mcal .empty-cell { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }

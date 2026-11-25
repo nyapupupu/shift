@@ -343,6 +343,7 @@ function viewYear() {
       <button class="iconbtn" data-act="year-next">›</button>
     </div>
     ${taxCard}
+    ${limitCard(tax)}
     <div style="text-align:center;margin-bottom:10px">${basisSeg()}</div>
     <div class="card">
       <h2>${y}年 見込み</h2>
@@ -369,7 +370,66 @@ function viewYear() {
       <p><b>アルバイト・パート（給与）</b>：給与の収入は、その年に<b>支払われた</b>分で数えます（12月に働いて1月に振り込まれる分は翌年）。通勤手当は一定の限度額まで非課税で、給与の収入には入りません。源泉徴収票と照らし合わせるときは「総支給から交通費を除いた額」を見てください（振込実績に控除額を入れておく必要があります）。</p>
       <p><b>業務委託（報酬）</b>：報酬と一緒に支払われた交通費も収入に入り、実際にかかった交通費は経費になります。収入は原則として仕事をした（終えた）年で数えるため、見込みは仕事をした日ベースで集計しています。一定の条件を満たす場合は、入金された日で数える方法も選べます。</p>
       <p>経費は交通費しか入っていません。ほかの経費や、確定申告が必要かどうかは、国税庁の案内や税務署で確認してください。</p>
+    </div>
+    <button class="btn ghost block" data-act="csv" style="margin-bottom:12px">${y}年の明細をCSVで書き出す（確定申告用）</button>`;
+}
+
+/* ---------- 年収の目安ライン ---------- */
+const LIMIT_TARGETS = {
+  wage: 'アルバイトの給与（交通費を除く）',
+  wageTransport: 'アルバイトの給与＋交通費',
+};
+function limitCard(tax) {
+  const limits = state.limits || [];
+  if (!limits.length) return '';
+  const e = tax.employee.est;
+  const items = limits.map((l) => {
+    const cur = l.target === 'wageTransport' ? e.wage + e.transport : e.wage;
+    const amount = Number(l.amount) || 0;
+    const pct = amount ? Math.min(100, Math.round((cur / amount) * 100)) : 0;
+    const over = cur > amount;
+    return `<div style="margin:8px 0 12px">
+      <div class="row between"><b>${esc(l.name || yen(amount))}</b><span class="small ${over ? 'danger' : 'muted'}">${over ? `${yen(cur - amount)} 超えています` : `あと ${yen(amount - cur)}`}</span></div>
+      <div class="bar-track"><div class="bar-fill ${over ? 'over' : pct >= 90 ? 'near' : ''}" style="width:${pct}%"></div></div>
+      <div class="row between small muted"><span>${LIMIT_TARGETS[l.target] || LIMIT_TARGETS.wage}</span><span>${yen(cur)} / ${yen(amount)}</span></div>
     </div>`;
+  }).join('');
+  return `<div class="card"><h2>${ui.year}年 目安ラインまで <span class="muted small">（見込み・給料日ベース）</span></h2>${items}
+    <p class="note">入力済みのシフトから計算した見込みです。これから入れるシフトの分は含まれません。</p></div>`;
+}
+function openLimit(l) {
+  const isNew = !l;
+  l = l || { id: uid(), name: '', amount: '', target: 'wage' };
+  openSheet(`
+    <h2>${isNew ? '目安ラインを追加' : '目安ラインを編集'}</h2>
+    <form id="f">
+      <div class="field"><label>名前</label><input name="name" value="${esc(l.name)}" placeholder="例：扶養の目安"></div>
+      <div class="field"><label>金額（円・1年あたり）</label><input type="number" inputmode="numeric" name="amount" value="${l.amount}" min="0" required></div>
+      <div class="field"><label>比べる金額</label><select name="target">
+        ${Object.entries(LIMIT_TARGETS).map(([k, v]) => `<option value="${k}" ${l.target === k ? 'selected' : ''}>${v}</option>`).join('')}
+      </select></div>
+      <p class="note">税金や扶養の基準額は、年度や立場（学生かどうか、税金か社会保険か）によって変わり、交通費を含めるかどうかも基準ごとに違います。使う基準は、国税庁の案内・勤務先・家族の勤務先などで確認して入力してください。</p>
+      <div class="actions">
+        ${isNew ? '' : '<button type="button" class="btn del" data-act="del">削除</button>'}
+        <button type="button" class="btn ghost" data-act="cancel">閉じる</button>
+        <button type="submit" class="btn">保存</button>
+      </div>
+    </form>`, (root) => {
+    const f = $('#f', root);
+    $('[data-act=cancel]', root).addEventListener('click', closeSheet);
+    $('[data-act=del]', root)?.addEventListener('click', () => {
+      state.limits = (state.limits || []).filter((x) => x.id !== l.id); save(); closeSheet(); render();
+    });
+    f.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const fd = new FormData(f);
+      const out = { ...l, name: fd.get('name').trim(), amount: num(fd.get('amount')), target: fd.get('target') };
+      state.limits = state.limits || [];
+      const i = state.limits.findIndex((x) => x.id === out.id);
+      if (i >= 0) state.limits[i] = out; else state.limits.push(out);
+      save(); closeSheet(); render();
+    });
+  });
 }
 
 /* ========== 設定 ========== */
@@ -388,6 +448,12 @@ function viewSettings() {
     <div class="card">
       <div class="row between"><h2>バイト先</h2><button class="btn sm sub" data-act="add-wp">＋ 追加</button></div>
       ${list || '<div class="empty">まだ登録されていません</div>'}
+    </div>
+    <div class="card">
+      <div class="row between"><h2>年収の目安ライン</h2><button class="btn sm sub" data-act="add-limit">＋ 追加</button></div>
+      ${(state.limits || []).map((l) => `<div class="shift-item" data-limit="${l.id}"><div class="grow"><b>${esc(l.name || '目安ライン')}</b>
+        <div class="muted small">${yen(l.amount)}・${LIMIT_TARGETS[l.target] || LIMIT_TARGETS.wage}</div></div><span class="muted small">›</span></div>`).join('')
+        || '<p class="note">「扶養の目安」のように金額を決めておくと、年収画面で今年の見込みがどこまで来ているかを表示します。</p>'}
     </div>
     <div class="card">
       <h2>Apple カレンダーに追加</h2>
@@ -437,7 +503,20 @@ function openSheet(html, bind) {
   $('#sheet-backdrop').hidden = false;
   bind?.($('#sheet-body'));
 }
-function closeSheet() { $('#sheet-backdrop').hidden = true; $('#sheet-body').innerHTML = ''; }
+function closeSheet() { $('#sheet-backdrop').hidden = true; $('#sheet-body').innerHTML = ''; clearDraft(); }
+
+/* 入力途中のシフトを保存しておき、iPhone がアプリを裏で終了させても、次に開いたときに戻せるようにする */
+const DRAFT = 'shiftpay.draft';
+const clearDraft = () => { try { localStorage.removeItem(DRAFT); } catch { /* 保存できない環境では何もしない */ } };
+function restoreDraft() {
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem(DRAFT)); } catch { /* 壊れた下書きは無視 */ }
+  if (!d?.sh?.date) return;
+  const exists = state.shifts.some((s) => s.id === d.sh.id);
+  ui.sel = d.sh.date; [ui.calY, ui.calM] = parseYmd(d.sh.date); ui.tab = 'calendar';
+  render();
+  openShift(d.sh, { isNew: d.isNew || !exists, restored: true });
+}
 $('#sheet-backdrop').addEventListener('click', (e) => { if (e.target.id === 'sheet-backdrop') closeSheet(); });
 
 function colorPicker(current) {
@@ -455,23 +534,24 @@ function bindColorPicker(root) {
 }
 
 /* --- シフト --- */
-function openShift(sh) {
-  const isNew = !sh;
-  if (isNew) {
+function openShift(sh, opts = {}) {
+  const isNew = opts.isNew ?? !sh;
+  if (!sh) {
     const wp = state.workplaces[0];
     sh = { id: uid(), date: ui.sel, workplaceId: wp?.id ?? null, start: '', end: '', breakMin: 0, transport: wp?.transport ?? 0, dailyOverride: null, memo: '', oneOff: { name: '', daily: '', color: ONEOFF_COLOR, payDate: '' } };
     applyLastTimes(sh);
   }
   const oo = sh.oneOff || { name: '', daily: '', color: ONEOFF_COLOR, payDate: '' };
-  const opts = state.workplaces.map((w) => `<option value="${w.id}" ${w.id === sh.workplaceId ? 'selected' : ''}>${esc(w.name)}</option>`).join('');
+  const wpOpts = state.workplaces.map((w) => `<option value="${w.id}" ${w.id === sh.workplaceId ? 'selected' : ''}>${esc(w.name)}</option>`).join('');
   const set = (v) => v != null && v !== '';
   const payMode = set(sh.dailyOverride) ? 'daily' : set(sh.hourlyOverride) ? 'hourly' : '';
   const overrideVal = payMode === 'daily' ? sh.dailyOverride : payMode === 'hourly' ? sh.hourlyOverride : '';
   openSheet(`
     <h2>${isNew ? 'シフトを追加' : 'シフトを編集'}</h2>
+    ${opts.restored ? '<div class="preview small">入力途中の内容を元に戻しました。</div>' : ''}
     <form id="f">
       <div class="field"><label>バイト先</label>
-        <select name="wp">${opts}<option value="" ${sh.workplaceId ? '' : 'selected'}>単発（日給）</option></select></div>
+        <select name="wp">${wpOpts}<option value="" ${sh.workplaceId ? '' : 'selected'}>単発（日給）</option></select></div>
       <div class="field"><label>日付</label><input type="date" name="date" value="${sh.date}" required></div>
       <div id="oneoff-fields">
         <div class="field"><label>名前</label><input name="ooName" value="${esc(oo.name)}" placeholder="例：イベント設営"></div>
@@ -510,7 +590,7 @@ function openShift(sh) {
         <button type="button" class="btn ghost" data-act="cancel">閉じる</button>
         <button type="submit" class="btn">保存</button>
       </div>
-      ${isNew ? '' : '<button type="button" class="btn sub block" data-act="dup" style="margin-top:8px">この内容で別の日にもコピー</button>'}
+      <button type="button" class="btn sub block" data-act="multi" style="margin-top:8px">${isNew ? '複数の日にまとめて追加' : 'この内容をほかの日にもコピー'}</button>
     </form>`, (root) => {
     const f = $('#f', root);
     bindColorPicker(root);
@@ -577,6 +657,11 @@ function openShift(sh) {
       }
       refresh();
     });
+    const saveDraft = () => { try { localStorage.setItem(DRAFT, JSON.stringify({ isNew, sh: read() })); } catch { /* 容量不足などは無視 */ } };
+    f.addEventListener('input', saveDraft);
+    f.addEventListener('change', saveDraft);
+    $('#time-hist', root).addEventListener('click', () => setTimeout(saveDraft));
+    if (opts.restored) saveDraft();
     f.addEventListener('input', refresh);
     f.addEventListener('change', refresh);
     refresh();
@@ -594,12 +679,7 @@ function openShift(sh) {
       if (!confirm('このシフトを削除しますか？')) return;
       state.shifts = state.shifts.filter((s) => s.id !== sh.id); save(); closeSheet(); render();
     });
-    $('[data-act=dup]', root)?.addEventListener('click', () => {
-      const date = prompt('コピー先の日付（例：2026-12-01）', sh.date);
-      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
-      state.shifts.push({ ...read(), id: uid(), date, icsExported: false, oneOff: read().oneOff ? { ...read().oneOff, payDate: '' } : null });
-      save(); closeSheet(); ui.sel = date; [ui.calY, ui.calM] = parseYmd(date); render();
-    });
+    $('[data-act=multi]', root).addEventListener('click', () => openMultiDate(read(), isNew));
   });
 }
 
@@ -621,6 +701,54 @@ function timeHistory(workplaceId, n = 5) {
     if (out.length >= n) break;
   }
   return out;
+}
+
+/** 日付を複数選んで、同じ内容のシフトをまとめて追加する */
+function openMultiDate(cur, isNew) {
+  const selected = new Set(isNew && cur.date ? [cur.date] : []);
+  let [y, m] = parseYmd(cur.date || today());
+  const byDate = {};
+  for (const s of state.shifts) (byDate[s.date] ||= []).push(s);
+  const draw = (root) => {
+    const first = new Date(y, m - 1, 1).getDay();
+    const cells = Array(first).fill('');
+    for (let d = 1; d <= daysInMonth(y, m); d++) cells.push(ymd(y, m, d));
+    $('#mlabel', root).textContent = `${y}年${m}月`;
+    $('#mgrid', root).innerHTML = DOW.map((d, i) => `<div class="dow ${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${d}</div>`).join('')
+      + cells.map((date) => date ? `<button type="button" class="day mday ${selected.has(date) ? 'picked' : ''} ${dowOf(date) === 0 || holidayName(date) ? 'sun' : dowOf(date) === 6 ? 'sat' : ''}" data-pick="${date}">
+          <span class="d">${parseYmd(date)[2]}</span><span class="dots">${(byDate[date] || []).map((s) => `<i class="dot" style="background:${shiftColor(s)}"></i>`).join('')}</span></button>` : '<div class="day mday empty-cell"></div>').join('');
+    $('#mok', root).textContent = `${selected.size}日分を${isNew ? '追加' : 'コピー'}`;
+    $('#mok', root).disabled = !selected.size;
+  };
+  openSheet(`
+    <div id="mwrap">
+    <h2>${isNew ? '複数の日にまとめて追加' : 'ほかの日にもコピー'}</h2>
+    <p class="note">${esc(shiftName(cur))}　${cur.start && cur.end ? `${cur.start}〜${cur.end}` : '時間指定なし'}　を追加する日をタップして選んでください。</p>
+    <div class="monthnav"><button type="button" class="iconbtn" data-m="-1">‹</button><span class="label" id="mlabel"></span><button type="button" class="iconbtn" data-m="1">›</button></div>
+    <div class="cal mcal" id="mgrid"></div>
+    <div class="actions">
+      <button type="button" class="btn ghost" data-act="back">戻る</button>
+      <button type="button" class="btn" id="mok"></button>
+    </div></div>`, (root) => {
+    draw(root);
+    $('#mwrap', root).addEventListener('click', (e) => {
+      const nav = e.target.closest('[data-m]');
+      if (nav) { [y, m] = addMonths(y, m, Number(nav.dataset.m)); return draw(root); }
+      const pick = e.target.closest('[data-pick]');
+      if (pick) { const d = pick.dataset.pick; selected.has(d) ? selected.delete(d) : selected.add(d); return draw(root); }
+    });
+    $('[data-act=back]', root).addEventListener('click', () => openShift(cur, { isNew }));
+    $('#mok', root).addEventListener('click', () => {
+      const now = Date.now();
+      if (!isNew) { const i = state.shifts.findIndex((s) => s.id === cur.id); if (i >= 0) state.shifts[i] = { ...cur, updatedAt: now }; }
+      const dates = [...selected].sort();
+      dates.forEach((date, k) => state.shifts.push({
+        ...cur, id: uid() + k, date, icsExported: false, updatedAt: now + k,
+        oneOff: cur.oneOff ? { ...cur.oneOff, payDate: '' } : null,
+      }));
+      save(); closeSheet(); ui.sel = dates[0]; [ui.calY, ui.calM] = parseYmd(dates[0]); render();
+    });
+  });
 }
 
 function applyLastTimes(sh) {
@@ -791,11 +919,12 @@ function openPayment(src) {
 /* ========== イベント ========== */
 function bindView(view) {
   view.onclick = (e) => {
-    const t = e.target.closest('[data-act],[data-date],[data-shift],[data-wp],[data-basis]');
+    const t = e.target.closest('[data-act],[data-date],[data-shift],[data-wp],[data-basis],[data-limit]');
     if (!t) return;
     if (t.dataset.date) { ui.sel = t.dataset.date; const [y, m] = parseYmd(t.dataset.date); ui.calY = y; ui.calM = m; return render(); }
     if (t.dataset.shift) return openShift(state.shifts.find((s) => s.id === t.dataset.shift));
     if (t.dataset.wp) return openWorkplace(wpById(t.dataset.wp));
+    if (t.dataset.limit) return openLimit((state.limits || []).find((l) => l.id === t.dataset.limit));
     if (t.dataset.basis) { ui.basis = t.dataset.basis; localStorage.setItem('shiftpay.basis', ui.basis); return render(); }
     const act = t.dataset.act;
     const moves = {
@@ -809,6 +938,8 @@ function bindView(view) {
     };
     if (moves[act]) { moves[act](); return render(); }
     if (act === 'add-shift') return openShift(null);
+    if (act === 'add-limit') return openLimit(null);
+    if (act === 'csv') return exportCsv(ui.year);
     if (act === 'add-wp') return openWorkplace(null);
     if (act === 'edit-pay') return openPayment(t.dataset.src);
     if (act === 'export') return exportData();
@@ -850,20 +981,50 @@ function download(text, filename, type) {
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 60000);
 }
-function exportData() {
-  const name = `shift-backup-${today()}.json`;
-  const text = JSON.stringify({ ...state, backupAt: new Date().toISOString() }, null, 2);
-  const done = () => { localStorage.setItem(LAST_BACKUP, today()); render(); };
-  const file = new File([text], name, { type: 'application/json' });
-  // iPhone では共有メニューを開き、「"ファイル"に保存」で iCloud Drive に保存できるようにする
+/** iPhone では共有メニューを開き（「"ファイル"に保存」で iCloud Drive に保存できる）、使えなければダウンロードする */
+function shareFile(text, name, type, done = () => {}) {
+  const file = new File([text], name, { type });
   if (navigator.canShare?.({ files: [file] })) {
     navigator.share({ files: [file] }).then(done).catch((err) => {
-      if (err.name !== 'AbortError') { download(text, name, 'application/json'); done(); }
+      if (err.name !== 'AbortError') { download(text, name, type); done(); }
     });
     return;
   }
-  download(text, name, 'application/json');
+  download(text, name, type);
   done();
+}
+function exportData() {
+  const text = JSON.stringify({ ...state, backupAt: new Date().toISOString() }, null, 2);
+  shareFile(text, `shift-backup-${today()}.json`, 'application/json', () => { localStorage.setItem(LAST_BACKUP, today()); render(); });
+}
+
+/* ---------- 確定申告用 CSV ---------- */
+const csvCell = (v) => { const t = String(v ?? ''); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+const csvRow = (cells) => cells.map(csvCell).join(',');
+function exportCsv(year) {
+  const y = String(year);
+  const rows = [csvRow([`${y}年 シフト明細（税金用のまとめと同じ基準：アルバイトは支給日、業務委託は仕事をした日でこの年に入るもの）`])];
+  rows.push(csvRow(['勤務日', '支給予定日', '勤務先', '契約の種類', '開始', '終了', '休憩(分)', '勤務時間(分)', '給与・報酬(見込み)', '支払われる交通費', '経費になる交通費(業務委託)', 'メモ']));
+  const list = [...state.shifts].sort((a, b) => a.date.localeCompare(b.date) || (a.start || '').localeCompare(b.start || ''));
+  for (const sh of list) {
+    const wp = sh.workplaceId ? wpById(sh.workplaceId) : null;
+    if (sh.workplaceId && !wp) continue;
+    const ct = contractOf(sh, wp) === CONTRACTOR;
+    const pay = payDateFor(sh, wp);
+    if (!(ct ? sh.date : pay).startsWith(y)) continue;
+    const tr = shiftTransport(sh, wp);
+    rows.push(csvRow([sh.date, pay, shiftName(sh), ct ? '業務委託' : 'アルバイト', sh.start || '', sh.end || '', sh.breakMin || 0,
+      shiftMinutes(sh).paidMin, shiftWage(sh, wp), tr.paid, tr.expense, sh.memo || '']));
+  }
+  rows.push('');
+  rows.push(csvRow([`${y}年 振込実績（振り込まれた月がこの年のもの）`]));
+  rows.push(csvRow(['振込月', '振込日', '勤務先', '契約の種類', '振込額', 'うち交通費', '控除・源泉徴収税額', '総支給額・支払金額', 'メモ']));
+  for (const p of [...state.payments].filter((x) => x.month.startsWith(y)).sort((a, b) => a.month.localeCompare(b.month))) {
+    const b = paymentBreakdown(p);
+    rows.push(csvRow([p.month, p.date || '', sourceName(p.source), isContractSrc(p.source) ? '業務委託' : 'アルバイト', b.amount, b.transport, b.deduction, b.gross, p.memo || '']));
+  }
+  // Excel で文字化けしないよう BOM を付ける
+  shareFile('\ufeff' + rows.join('\r\n') + '\r\n', `shift-${y}.csv`, 'text/csv');
 }
 function daysSinceBackup() {
   const last = localStorage.getItem(LAST_BACKUP);
@@ -915,3 +1076,4 @@ $$('.tabbar button').forEach((b) => b.addEventListener('click', () => {
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 render();
+if (!loadProblem) restoreDraft();
