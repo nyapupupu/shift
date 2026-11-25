@@ -172,3 +172,6 @@ tfoot td { font-weight: 700; border-bottom: 0; }
 .empty { text-align: center; color: var(--muted); padding: 18px 0; font-size: 13px; }
 .btn:disabled { opacity: .45; cursor: default; }
 details summary { cursor: pointer; }
+.banner { border-color: var(--accent); }
+.banner.warn { border-color: var(--danger); }
+.banner p { margin: 4px 0 8px; }

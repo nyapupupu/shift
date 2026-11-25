@@ -2,6 +2,7 @@ import {
   pad, ymd, ym, parseYmd, daysInMonth, addMonths, rateFor, shiftMinutes, shiftWage, payDateFor,
   aggregate, paymentsByMonth, paymentBreakdown, ONEOFF,
 } from './calc.js';
+import { migrate, NewerDataError, CURRENT_VERSION } from './migrate.js';
 import { shiftsToIcs } from './ics.js';
 
 /* ========== データ ========== */
@@ -9,15 +10,42 @@ const KEY = 'shiftpay.v1';
 const COLORS = ['#22a06b', '#2f6fed', '#f08c00', '#e5484d', '#8e4ec6', '#12a5b8', '#d6409f', '#7a5a3a', '#5b6b7f'];
 const ONEOFF_COLOR = '#8a94a6';
 
+// 保存場所の名前。データを引き継ぐため、この値は今後も変えないこと（形式の変更は migrate.js で行う）
+let loadProblem = null; // 読み込めなかったときの情報 { kind: 'newer' | 'broken', message }
+
 function load() {
+  const fresh = { version: CURRENT_VERSION, workplaces: [], shifts: [], payments: [] };
+  const raw = localStorage.getItem(KEY);
+  if (raw == null) return fresh;
   try {
-    const s = JSON.parse(localStorage.getItem(KEY));
-    if (s && Array.isArray(s.workplaces)) return { workplaces: [], shifts: [], payments: [], ...s };
-  } catch { /* 壊れたデータは無視 */ }
-  return { version: 1, workplaces: [], shifts: [], payments: [] };
+    const parsed = JSON.parse(raw);
+    const d = migrate(parsed);
+    if ((Number(parsed.version) || 1) !== d.version) {
+      localStorage.setItem(`shiftpay.before-v${d.version}`, raw); // 変換前の控え
+      localStorage.setItem(KEY, JSON.stringify(d));
+    }
+    return d;
+  } catch (err) {
+    if (err instanceof NewerDataError) {
+      // 古いプログラムが新しい形式のデータを上書きしないよう、保存を止める
+      loadProblem = { kind: 'newer', message: err.message };
+    } else {
+      // 読めなかったデータは消さずに別の場所へ退避する
+      localStorage.setItem('shiftpay.unreadable', raw);
+      loadProblem = { kind: 'broken', message: err.message };
+    }
+    return fresh;
+  }
 }
 let state = load();
-const save = () => localStorage.setItem(KEY, JSON.stringify(state));
+function save() {
+  if (loadProblem?.kind === 'newer') { alert('アプリが古いまま開かれているため、保存できません。ページを再読み込みしてください。'); return; }
+  try { localStorage.setItem(KEY, JSON.stringify(state)); }
+  catch (err) { alert('保存できませんでした：' + err.message); }
+}
+// 端末の容量が少なくなったときなどに、ブラウザがデータを消さないよう頼む
+navigator.storage?.persist?.().catch(() => {});
+const LAST_BACKUP = 'shiftpay.lastBackup';
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
 /* ========== ユーティリティ ========== */
@@ -52,7 +80,7 @@ function render() {
   $('#title').textContent = TITLES[ui.tab];
   $$('.tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.tab === ui.tab));
   const view = $('#view');
-  view.innerHTML = { calendar: viewCalendar, month: viewMonth, year: viewYear, settings: viewSettings }[ui.tab]();
+  view.innerHTML = banners() + { calendar: viewCalendar, month: viewMonth, year: viewYear, settings: viewSettings }[ui.tab]();
   bindView(view);
 }
 
@@ -322,7 +350,8 @@ function viewSettings() {
     </div>
     <div class="card">
       <h2>バックアップ</h2>
-      <p class="note">データはこの端末のブラウザの中だけに保存されています。機種変更やブラウザのデータ削除の前に、ファイルに書き出しておいてください。</p>
+      <p class="note">データはこの端末のブラウザの中だけに保存されています。アプリを修正・更新してもデータはそのまま残りますが、機種変更やブラウザのデータ削除に備えて、ときどきファイルに書き出しておいてください（iCloud Drive などに保存しておくと安心です）。</p>
+      <p class="small muted">最後のバックアップ：${localStorage.getItem(LAST_BACKUP) ? fmtDate(localStorage.getItem(LAST_BACKUP)) + `（${daysSinceBackup()}日前）` : 'まだありません'}</p>
       <div class="actions">
         <button class="btn ghost" data-act="export">書き出す</button>
         <button class="btn ghost" data-act="import">読み込む</button>
@@ -626,6 +655,8 @@ function bindView(view) {
     if (act === 'add-wp') return openWorkplace(null);
     if (act === 'edit-pay') return openPayment(t.dataset.src);
     if (act === 'export') return exportData();
+    if (act === 'reload') return location.reload();
+    if (act === 'export-unreadable') return download(localStorage.getItem('shiftpay.unreadable') || '', `shift-unreadable-${today()}.json`, 'application/json');
     if (act === 'ics-month') return exportIcs(state.shifts.filter((s) => s.date.startsWith(ym(ui.calY, ui.calM))), `shift-${ym(ui.calY, ui.calM)}.ics`);
     if (act === 'ics-new') return exportIcs(unexported(), `shift-new-${today()}.ics`);
     if (act === 'ics-all') {
@@ -657,21 +688,48 @@ function exportIcs(shifts, filename, { skipWarning = false } = {}) {
   save(); render();
 }
 
-function exportData() {
-  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+function download(text, filename, type) {
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `shift-backup-${today()}.json`;
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = filename;
   a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+function exportData() {
+  download(JSON.stringify(state, null, 2), `shift-backup-${today()}.json`, 'application/json');
+  localStorage.setItem(LAST_BACKUP, today());
+  render();
+}
+function daysSinceBackup() {
+  const last = localStorage.getItem(LAST_BACKUP);
+  if (!last) return null;
+  const [y, m, d] = parseYmd(last);
+  return Math.floor((Date.now() - new Date(y, m - 1, d).getTime()) / 86400000);
+}
+
+/** 画面上部に出すお知らせ（読み込み失敗・バックアップの催促） */
+function banners() {
+  if (loadProblem?.kind === 'newer') {
+    return `<div class="card banner warn"><b>アプリが古いまま開かれています</b><p class="note">データを守るため、保存を止めています。再読み込みすると最新のアプリになります。</p>
+      <button class="btn sm block" data-act="reload">再読み込み</button></div>`;
+  }
+  if (loadProblem?.kind === 'broken') {
+    return `<div class="card banner warn"><b>保存されていたデータを読み込めませんでした</b><p class="note">${esc(loadProblem.message)}。元のデータは消さずに残してあります。書き出して、開発者に送ってください。</p>
+      <button class="btn sm block" data-act="export-unreadable">読めなかったデータを書き出す</button></div>`;
+  }
+  if (ui.tab !== 'calendar' || state.shifts.length < 5) return '';
+  const days = daysSinceBackup();
+  if (days != null && days < 30) return '';
+  return `<div class="card banner"><div class="row between"><span class="small">${days == null ? 'まだバックアップしていません' : `最後のバックアップから${days}日たちました`}</span>
+    <button class="btn sm sub" data-act="export">バックアップ</button></div></div>`;
 }
 async function importData(file) {
   if (!file) return;
   try {
-    const data = JSON.parse(await file.text());
-    if (!Array.isArray(data.workplaces) || !Array.isArray(data.shifts)) throw new Error('形式が違います');
+    const data = migrate(JSON.parse(await file.text()));
     if (!confirm('今のデータをこのファイルの内容で置き換えます。よろしいですか？')) return;
-    state = { version: 1, payments: [], ...data };
+    if (loadProblem?.kind === 'broken') loadProblem = null;
+    state = data;
     save(); render(); alert('読み込みました');
   } catch (err) { alert('読み込めませんでした：' + err.message); }
 }
