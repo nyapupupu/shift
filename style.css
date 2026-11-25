@@ -170,3 +170,4 @@ tfoot td { font-weight: 700; border-bottom: 0; }
 }
 @media (min-width: 760px) { .fab { right: calc(50% - 360px + 18px); } }
 .empty { text-align: center; color: var(--muted); padding: 18px 0; font-size: 13px; }
+.btn:disabled { opacity: .45; cursor: default; }

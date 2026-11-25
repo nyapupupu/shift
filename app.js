@@ -2,6 +2,7 @@ import {
   pad, ymd, ym, parseYmd, daysInMonth, addMonths, rateFor, shiftMinutes, shiftWage, payDateFor,
   aggregate, paymentsByMonth, paymentBreakdown, ONEOFF,
 } from './calc.js';
+import { shiftsToIcs } from './ics.js';
 
 /* ========== データ ========== */
 const KEY = 'shiftpay.v1';
@@ -115,6 +116,7 @@ function viewCalendar() {
         <div class="stat"><div class="k">交通費</div><div class="v">${yen(transport)}</div></div>
       </div>
       <div class="muted small" style="margin-top:6px">${count}回・${hm(minutes)}　合計 ${yen(wage + transport)}</div>
+      <button class="btn sm ghost block" data-act="ics-month" style="margin-top:10px" ${count ? '' : 'disabled'}>📆 ${m}月のシフトを Apple カレンダーに追加</button>
     </div>
     <button class="fab" data-act="add-shift" aria-label="シフト追加">＋</button>`;
 }
@@ -301,6 +303,14 @@ function viewSettings() {
       ${list || '<div class="empty">まだ登録されていません</div>'}
     </div>
     <div class="card">
+      <h2>Apple カレンダーに追加</h2>
+      <p class="note">シフトをカレンダー用のファイル（.ics）にして開きます。iPhone では「すべてを追加」を押すとカレンダーに入ります。自動では同期しないため、書き出した後にシフトを変更・削除した場合は、カレンダー側でも直してください。</p>
+      <div class="actions">
+        <button class="btn sub" data-act="ics-new" ${unexported().length ? '' : 'disabled'}>まだ追加していないシフト（${unexported().length}件）</button>
+      </div>
+      <button class="btn sm ghost block" data-act="ics-future" style="margin-top:8px">今日以降のシフトをすべて（${state.shifts.filter((s) => s.date >= today()).length}件）</button>
+    </div>
+    <div class="card">
       <h2>バックアップ</h2>
       <p class="note">データはこの端末のブラウザの中だけに保存されています。機種変更やブラウザのデータ削除の前に、ファイルに書き出しておいてください。</p>
       <div class="actions">
@@ -447,7 +457,7 @@ function openShift(sh) {
     $('[data-act=dup]', root)?.addEventListener('click', () => {
       const date = prompt('コピー先の日付（例：2026-12-01）', sh.date);
       if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
-      state.shifts.push({ ...read(), id: uid(), date, oneOff: read().oneOff ? { ...read().oneOff, payDate: '' } : null });
+      state.shifts.push({ ...read(), id: uid(), date, icsExported: false, oneOff: read().oneOff ? { ...read().oneOff, payDate: '' } : null });
       save(); closeSheet(); ui.sel = date; [ui.calY, ui.calM] = parseYmd(date); render();
     });
   });
@@ -606,10 +616,32 @@ function bindView(view) {
     if (act === 'add-wp') return openWorkplace(null);
     if (act === 'edit-pay') return openPayment(t.dataset.src);
     if (act === 'export') return exportData();
+    if (act === 'ics-month') return exportIcs(state.shifts.filter((s) => s.date.startsWith(ym(ui.calY, ui.calM))), `shift-${ym(ui.calY, ui.calM)}.ics`);
+    if (act === 'ics-new') return exportIcs(unexported(), `shift-new-${today()}.ics`);
+    if (act === 'ics-future') return exportIcs(state.shifts.filter((s) => s.date >= today()), `shift-from-${today()}.ics`);
     if (act === 'import') return $('#import-file').click();
   };
   const file = $('#import-file', view);
   if (file) file.onchange = () => importData(file.files[0]);
+}
+
+function unexported() { return state.shifts.filter((s) => !s.icsExported); }
+
+function exportIcs(shifts, filename) {
+  if (!shifts.length) return alert('書き出すシフトがありません');
+  const already = shifts.filter((s) => s.icsExported).length;
+  if (already && !confirm(`${shifts.length}件のうち${already}件は、以前カレンダーに追加済みです。もう一度追加すると、カレンダーに同じ予定が2つ入ることがあります。続けますか？`)) return;
+  const d = new Date();
+  const stamp = `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
+  const file = new File([shiftsToIcs(shifts, state.workplaces, stamp)], filename, { type: 'text/calendar' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  const ids = new Set(shifts.map((s) => s.id));
+  state.shifts.forEach((s) => { if (ids.has(s.id)) s.icsExported = true; });
+  save(); render();
 }
 
 function exportData() {
